@@ -19,4 +19,5 @@ To build with the MSRV you will need to pin dependencies as follows:
 
 ```shell
 cargo update -p home --precise 0.5.5
+cargo update -p jobserver --precise 0.1.26
 ```

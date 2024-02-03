@@ -52,6 +52,7 @@ jobs:
       if: matrix.rust.version == '1.63.0'
       run: |
         cargo update -p home --precise 0.5.5
+        cargo update -p jobserver --precise 0.1.26
     - name: Build
       run: cargo build --features ${{ matrix.features }} --no-default-features
     - name: Clippy

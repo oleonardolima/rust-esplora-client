@@ -24,9 +24,205 @@ use bitcoin::{
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 
-use reqwest::{header, Client, StatusCode};
+use reqwest::{header, Client};
 
 use crate::{BlockStatus, BlockSummary, Builder, Error, MerkleProof, OutputStatus, Tx, TxStatus};
+
+#[async_trait::async_trait]
+pub trait AsyncEsploraClient {
+    /// Make an HTTP GET request to given URL, deserializing to any `T` that
+    /// implement [`bitcoin::consensus::Decodable`].
+    ///
+    /// It should be used when requesting Esplora endpoints that can be directly
+    /// deserialized to native `rust-bitcoin` types, which implements
+    /// [`bitcoin::consensus::Decodable`] from `&[u8]`.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error either from the HTTP client, or the
+    /// [`bitcoin::consensus::Decodable`] deserialization.
+    async fn get_response<T: Decodable>(&self, url: &str) -> Result<T, Error>;
+
+    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    ///
+    /// It uses [`AsyncEsploraClient::get_response`] internally.
+    ///
+    /// See [`AsyncEsploraClient::get_response`] above for full documentation.
+    async fn get_opt_response<T: Decodable>(&self, url: &str) -> Result<Option<T>, Error>;
+
+    /// Make an HTTP GET request to given URL, deserializing to any `T` that
+    /// implements [`serde::de::DeserializeOwned`].
+    ///
+    /// It should be used when requesting Esplora endpoints that have a specific
+    /// defined API, mostly defined in [`crate::api`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error either from the HTTP client, or the
+    /// [`serde::de::DeserializeOwned`] deserialization.
+    async fn get_response_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+    ) -> Result<T, Error>;
+
+    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    ///
+    /// It uses [`AsyncEsploraClient::get_response_json`] internally.
+    ///
+    /// See [`AsyncEsploraClient::get_response_json`] above for full
+    /// documentation.
+    async fn get_opt_response_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+    ) -> Result<Option<T>, Error>;
+
+    /// Make an HTTP GET request to given URL, deserializing to any `T` that
+    /// implement [`bitcoin::consensus::Decodable`] from Hex, [`Vec<u8>`].
+    ///
+    /// It should be used when requesting Esplora endpoints that can be directly
+    /// deserialized to native `rust-bitcoin` types, which implements
+    /// [`bitcoin::consensus::Decodable`] from Hex, `Vec<&u8>`.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error either from the HTTP client, or the
+    /// [`bitcoin::consensus::Decodable`] deserialization.
+    async fn get_response_hex<T: Decodable>(&self, url: &str) -> Result<T, Error>;
+
+    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    ///
+    /// It uses [`AsyncEsploraClient::get_response_hex`] internally.
+    ///
+    /// See [`AsyncEsploraClient::get_response_hex`] above for full
+    /// documentation.
+    async fn get_opt_response_hex<T: Decodable>(&self, url: &str) -> Result<Option<T>, Error>;
+
+    /// Make an HTTP GET request to given URL, deserializing to `String`.
+    ///
+    /// It should be used when requesting Esplora endpoints that can return
+    /// `String` formatted data that can be parsed downstream.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error either from the HTTP client.
+    async fn get_response_text(&self, url: &str) -> Result<String, Error>;
+
+    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    ///
+    /// It uses [`AsyncEsploraClient::get_response_text`] internally.
+    ///
+    /// See [`AsyncEsploraClient::get_response_text`] above for full
+    /// documentation.
+    async fn get_opt_response_text(&self, url: &str) -> Result<Option<String>, Error>;
+}
+
+#[allow(unused_variables)]
+#[async_trait::async_trait]
+impl AsyncEsploraClient for Client {
+    async fn get_response<T: Decodable>(&self, url: &str) -> Result<T, Error> {
+        let response = self.get(url).send().await?;
+
+        match response.status().is_success() {
+            true => Ok(deserialize::<T>(&response.bytes().await?)?),
+            false => Err(Error::HttpResponse {
+                status: response.status().as_u16(),
+                message: response.text().await?,
+            }),
+        }
+    }
+
+    async fn get_opt_response<T: Decodable>(&self, url: &str) -> Result<Option<T>, Error> {
+        match self.get_response::<T>(url).await {
+            Ok(res) => Ok(Some(res)),
+            Err(Error::HttpResponse { status, message }) => match status {
+                404 => Ok(None),
+                _ => Err(Error::HttpResponse { status, message }),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_response_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+    ) -> Result<T, Error> {
+        let response = self.get(url).send().await?;
+
+        match response.status().is_success() {
+            // TODO: (@leonardo) this should not return an `Error::Reqwest` as it's failing due to
+            // json deserialization !
+            true => Ok(response.json::<T>().await.map_err(Error::Reqwest)?),
+            false => Err(Error::HttpResponse {
+                status: response.status().as_u16(),
+                message: response.text().await?,
+            }),
+        }
+    }
+
+    async fn get_opt_response_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+    ) -> Result<Option<T>, Error> {
+        match self.get_response_json(url).await {
+            Ok(res) => Ok(Some(res)),
+            Err(Error::HttpResponse { status, message }) => match status {
+                404 => Ok(None),
+                _ => Err(Error::HttpResponse { status, message }),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_response_hex<T: Decodable>(&self, url: &str) -> Result<T, Error> {
+        let response = self.get(url).send().await?;
+
+        match response.status().is_success() {
+            true => {
+                let hex_str = response.text().await?;
+                let hex_vec = Vec::from_hex(&hex_str)?;
+                Ok(deserialize(&hex_vec)?)
+            }
+            false => Err(Error::HttpResponse {
+                status: response.status().as_u16(),
+                message: response.text().await?,
+            }),
+        }
+    }
+
+    async fn get_opt_response_hex<T: Decodable>(&self, url: &str) -> Result<Option<T>, Error> {
+        match self.get_response_hex(url).await {
+            Ok(res) => Ok(Some(res)),
+            Err(Error::HttpResponse { status, message }) => match status {
+                404 => Ok(None),
+                _ => Err(Error::HttpResponse { status, message }),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_response_text(&self, url: &str) -> Result<String, Error> {
+        let response = self.get(url).send().await?;
+
+        match response.status().is_success() {
+            true => Ok(response.text().await?),
+            false => Err(Error::HttpResponse {
+                status: response.status().as_u16(),
+                message: response.text().await?,
+            }),
+        }
+    }
+
+    async fn get_opt_response_text(&self, url: &str) -> Result<Option<String>, Error> {
+        match self.get_response_text(url).await {
+            Ok(s) => Ok(Some(s)),
+            Err(Error::HttpResponse { status, message }) => match status {
+                404 => Ok(None),
+                _ => Err(Error::HttpResponse { status, message }),
+            },
+            Err(e) => Err(e),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AsyncClient {
@@ -71,151 +267,11 @@ impl AsyncClient {
         AsyncClient { url, client }
     }
 
-    /// .
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
-    async fn get_opt_response<T: Decodable>(&self, path: &str) -> Result<Option<T>, Error> {
-        let url = format!("{}{}", self.url, path);
-        let response = self.client.get(url).send().await?;
-
-        if response.status().eq(&StatusCode::NOT_FOUND) {
-            return Ok(None);
-        };
-
-        match response.status().is_success() {
-            true => Ok(Some(deserialize::<T>(&response.bytes().await?)?)),
-            false => Err(Error::HttpResponse {
-                status: response.status().as_u16(),
-                message: response.text().await?,
-            }),
-        }
-    }
-
-    /// .
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
-    async fn get_opt_response_txid(&self, path: &str) -> Result<Option<Txid>, Error> {
-        let url = format!("{}{}", self.url, path);
-        let response = self.client.get(url).send().await?;
-
-        if response.status().eq(&StatusCode::NOT_FOUND) {
-            return Ok(None);
-        };
-
-        match response.status().is_success() {
-            true => {
-                let txid = Txid::from_str(&response.text().await?)?;
-                Ok(Some(txid))
-            }
-            false => Err(Error::HttpResponse {
-                status: response.status().as_u16(),
-                message: response.text().await?,
-            }),
-        }
-    }
-
-    /// .
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
-    async fn get_response_json<T: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-    ) -> Result<T, Error> {
-        let url = format!("{}{}", self.url, path);
-        let response = self.client.get(url).send().await?;
-
-        match response.status().is_success() {
-            // TODO: (@leonardo) this should not return an `Error::Reqwest` as it's failing due to json deserialization !
-            true => Ok(response.json::<T>().await.map_err(Error::Reqwest)?),
-            false => Err(Error::HttpResponse {
-                status: response.status().as_u16(),
-                message: response.text().await?,
-            }),
-        }
-    }
-
-    /// .
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
-    async fn get_opt_response_json<'a, T: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-    ) -> Result<Option<T>, Error> {
-        let url = format!("{}{}", self.url, path);
-        let response = self.client.get(url).send().await?;
-
-        if response.status().eq(&StatusCode::NOT_FOUND) {
-            return Ok(None);
-        };
-
-        match response.status().is_success() {
-            // TODO: (@leonardo) this should not return an `Error::Reqwest` as it's failing due to json deserialization !
-            true => Ok(Some(response.json::<T>().await.map_err(Error::Reqwest)?)),
-            false => Err(Error::HttpResponse {
-                status: response.status().as_u16(),
-                message: response.text().await?,
-            }),
-        }
-    }
-
-    async fn get_response_hex<T: Decodable>(&self, path: &str) -> Result<T, Error> {
-        let url = format!("{}{}", self.url, path);
-        let response = self.client.get(url).send().await?;
-
-        match response.status().is_success() {
-            true => {
-                let hex_str = response.text().await?;
-                let hex_vec = Vec::from_hex(&hex_str)?;
-                Ok(deserialize(&hex_vec)?)
-            }
-            false => Err(Error::HttpResponse {
-                status: response.status().as_u16(),
-                message: response.text().await?,
-            }),
-        }
-    }
-
-    async fn get_opt_response_hex<T: Decodable>(&self, path: &str) -> Result<Option<T>, Error> {
-        let url = format!("{}{}", self.url, path);
-        let response = self.client.get(url).send().await?;
-
-        match response.status().is_success() {
-            true => {
-                let hex_str = response.text().await?;
-                let hex_vec = Vec::from_hex(&hex_str)?;
-                Ok(Some(deserialize(&hex_vec)?))
-            }
-            false => Err(Error::HttpResponse {
-                status: response.status().as_u16(),
-                message: response.text().await?,
-            }),
-        }
-    }
-
-    async fn get_response_str(&self, path: &str) -> Result<String, Error> {
-        let url = format!("{}{}", self.url, path);
-        let response = self.client.get(url).send().await?;
-
-        match response.status().is_success() {
-            true => Ok(response.text().await?),
-            false => Err(Error::HttpResponse {
-                status: response.status().as_u16(),
-                message: response.text().await?,
-            }),
-        }
-    }
-
     /// Get a [`Transaction`] option given its [`Txid`]
     pub async fn get_tx(&self, txid: &Txid) -> Result<Option<Transaction>, Error> {
-        self.get_opt_response(&format!("/tx/{txid}/raw")).await
+        self.client
+            .get_opt_response(&format!("{}/tx/{txid}/raw", self.url))
+            .await
     }
 
     /// Get a [`Transaction`] given its [`Txid`].
@@ -234,49 +290,64 @@ impl AsyncClient {
         block_hash: &BlockHash,
         index: usize,
     ) -> Result<Option<Txid>, Error> {
-        self.get_opt_response_txid(&format!("/block/{block_hash}/txid/{index}"))
-            .await
+        match self
+            .client
+            .get_opt_response_text(&format!("{}/block/{block_hash}/txid/{index}", self.url))
+            .await?
+        {
+            Some(s) => Ok(Some(Txid::from_str(&s).map_err(Error::HexToArray)?)),
+            None => Ok(None),
+        }
     }
 
     /// Get the status of a [`Transaction`] given its [`Txid`].
     pub async fn get_tx_status(&self, txid: &Txid) -> Result<TxStatus, Error> {
-        self.get_response_json(&format!("/tx/{txid}/status")).await
+        self.client
+            .get_response_json(&format!("{}/tx/{txid}/status", self.url))
+            .await
     }
 
     /// Get transaction info given it's [`Txid`].
     pub async fn get_tx_info(&self, txid: &Txid) -> Result<Option<Tx>, Error> {
-        self.get_opt_response_json(&format!("/tx/{txid}")).await
+        self.client
+            .get_opt_response_json(&format!("{}/tx/{txid}", self.url))
+            .await
     }
 
     /// Get a [`BlockHeader`] given a particular block hash.
     pub async fn get_header_by_hash(&self, block_hash: &BlockHash) -> Result<BlockHeader, Error> {
-        self.get_response_hex(&format!("/block/{block_hash}/header"))
+        self.client
+            .get_response_hex(&format!("{}/block/{block_hash}/header", self.url))
             .await
     }
 
     /// Get the [`BlockStatus`] given a particular [`BlockHash`].
     pub async fn get_block_status(&self, block_hash: &BlockHash) -> Result<BlockStatus, Error> {
-        self.get_response_json(&format!("/block/{block_hash}/status"))
+        self.client
+            .get_response_json(&format!("{}/block/{block_hash}/status", self.url))
             .await
     }
 
     /// Get a [`Block`] given a particular [`BlockHash`].
     pub async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>, Error> {
-        self.get_opt_response(&format!("/block/{block_hash}/raw"))
+        self.client
+            .get_opt_response(&format!("{}/block/{block_hash}/raw", self.url))
             .await
     }
 
     /// Get a merkle inclusion proof for a [`Transaction`] with the given
     /// [`Txid`].
     pub async fn get_merkle_proof(&self, tx_hash: &Txid) -> Result<Option<MerkleProof>, Error> {
-        self.get_opt_response_json(&format!("/tx/{tx_hash}/merkle-proof"))
+        self.client
+            .get_opt_response_json(&format!("{}/tx/{tx_hash}/merkle-proof", self.url))
             .await
     }
 
     /// Get a [`MerkleBlock`] inclusion proof for a [`Transaction`] with the
     /// given [`Txid`].
     pub async fn get_merkle_block(&self, tx_hash: &Txid) -> Result<Option<MerkleBlock>, Error> {
-        self.get_opt_response_hex(&format!("/tx/{tx_hash}/merkleblock-proof"))
+        self.client
+            .get_opt_response_hex(&format!("{}/tx/{tx_hash}/merkleblock-proof", self.url))
             .await
     }
 
@@ -287,7 +358,8 @@ impl AsyncClient {
         txid: &Txid,
         index: u64,
     ) -> Result<Option<OutputStatus>, Error> {
-        self.get_opt_response_json(&format!("/tx/{txid}/outspend/{index}"))
+        self.client
+            .get_opt_response_json(&format!("{}/tx/{txid}/outspend/{index}", self.url))
             .await
     }
 
@@ -312,14 +384,16 @@ impl AsyncClient {
 
     /// Get the current height of the blockchain tip
     pub async fn get_height(&self) -> Result<u32, Error> {
-        self.get_response_str("/blocks/tip/height")
+        self.client
+            .get_response_text(&format!("{}/blocks/tip/height", self.url))
             .await
             .map(|height| u32::from_str(&height).map_err(Error::Parsing))?
     }
 
     /// Get the [`BlockHash`] of the current blockchain tip.
     pub async fn get_tip_hash(&self) -> Result<BlockHash, Error> {
-        self.get_response_str("/blocks/tip/hash")
+        self.client
+            .get_response_text(&format!("{}/blocks/tip/hash", self.url))
             .await
             .map(|block_hash| BlockHash::from_str(&block_hash).map_err(Error::HexToArray))?
     }
@@ -327,7 +401,8 @@ impl AsyncClient {
     /// Get the [`BlockHash`] of a specific block height
     pub async fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, Error> {
         // FIXME: should this use a new `get_opt_response_str` instead ?
-        self.get_response_str(&format!("/block-height/{block_height}"))
+        self.client
+            .get_response_text(&format!("{}/block-height/{}", self.url, block_height))
             .await
             .map(|block_hash| BlockHash::from_str(&block_hash).map_err(Error::HexToArray))?
     }
@@ -342,18 +417,23 @@ impl AsyncClient {
         last_seen: Option<Txid>,
     ) -> Result<Vec<Tx>, Error> {
         let script_hash = sha256::Hash::hash(script.as_bytes());
-        let path = match last_seen {
-            Some(last_seen) => format!("/scripthash/{:x}/txs/chain/{}", script_hash, last_seen),
-            None => format!("/scripthash/{:x}/txs", script_hash),
+        let url = match last_seen {
+            Some(last_seen) => format!(
+                "{}/scripthash/{:x}/txs/chain/{}",
+                self.url, script_hash, last_seen
+            ),
+            None => format!("{}/scripthash/{:x}/txs", self.url, script_hash),
         };
 
-        self.get_response_json(&path).await
+        self.client.get_response_json(&url).await
     }
 
     /// Get an map where the key is the confirmation target (in number of
     /// blocks) and the value is the estimated feerate (in sat/vB).
     pub async fn get_fee_estimates(&self) -> Result<HashMap<u16, f64>, Error> {
-        self.get_response_json("/fee-estimates").await
+        self.client
+            .get_response_json(&format!("{}/fee-estimates", self.url))
+            .await
     }
 
     /// Gets some recent block summaries starting at the tip or at `height` if
@@ -362,11 +442,11 @@ impl AsyncClient {
     /// The maximum number of summaries returned depends on the backend itself:
     /// esplora returns `10` while [mempool.space](https://mempool.space/docs/api) returns `15`.
     pub async fn get_blocks(&self, height: Option<u32>) -> Result<Vec<BlockSummary>, Error> {
-        let path = match height {
-            Some(height) => format!("/blocks/{height}"),
-            None => "/blocks".to_string(),
+        let url = match height {
+            Some(height) => format!("{}/blocks/{height}", self.url),
+            None => format!("{}/blocks", self.url),
         };
-        self.get_response_json(&path).await
+        self.client.get_response_json(&url).await
     }
 
     /// Get the underlying base URL.

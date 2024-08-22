@@ -66,7 +66,6 @@
 //! * `async-https-rustls-manual-roots` enables [`reqwest`], the async client
 //!   with support for proxying and TLS (SSL) using the `rustls` TLS backend
 //!   without using its the default root certificates.
-//!
 
 #![allow(clippy::result_large_err)]
 

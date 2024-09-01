@@ -76,6 +76,8 @@ pub mod api;
 
 #[cfg(feature = "async")]
 pub mod r#async;
+#[cfg(feature = "async-tor")]
+pub mod r#async_tor;
 #[cfg(feature = "blocking")]
 pub mod blocking;
 
@@ -172,6 +174,9 @@ pub enum Error {
     /// Error during reqwest HTTP request
     #[cfg(feature = "async")]
     Reqwest(::reqwest::Error),
+    /// Error during `arti-client` connection establishment
+    #[cfg(feature = "async-tor")]
+    Arti(::arti_client::Error),
     /// HTTP response error
     HttpResponse { status: u16, message: String },
     /// Invalid number returned

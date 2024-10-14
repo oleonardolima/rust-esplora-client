@@ -97,6 +97,22 @@ pub struct BlockSummary {
     pub merkle_root: bitcoin::hash_types::TxMerkleNode,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct AddressStats {
+    pub address: String,
+    pub chain_stats: AddressTxsSummary,
+    pub mempool_stats: AddressTxsSummary,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Deserialize)]
+pub struct AddressTxsSummary {
+    pub funded_txo_count: u32,
+    pub funded_txo_sum: u64,
+    pub spent_txo_count: u32,
+    pub spent_txo_sum: u64,
+    pub tx_count: u32,
+}
+
 impl Tx {
     pub fn to_tx(&self) -> Transaction {
         Transaction {

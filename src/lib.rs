@@ -267,7 +267,7 @@ mod test {
     use tokio::sync::Mutex;
     #[cfg(all(feature = "blocking", feature = "async"))]
     use {
-        bitcoin::{consensus, hashes::Hash, Amount},
+        bitcoin::{hashes::Hash, Amount},
         corepc_node::AddressType,
         electrsd::electrum_client::ElectrumApi,
         std::time::Duration,
@@ -535,9 +535,20 @@ mod test {
         let _miner = MINER.lock().await;
         generate_blocks_and_wait(1);
 
-        let height: Option<u32> = BITCOIND.client.get_block_count().unwrap().0.try_into().ok();
-        let tx_res = BITCOIND.client.get_transaction(txid).unwrap();
-        let tx_exp: Transaction = consensus::encode::deserialize_hex(&tx_res.hex).unwrap();
+        let tx_res = BITCOIND
+            .client
+            .get_transaction(txid)
+            .unwrap()
+            .into_model()
+            .unwrap();
+        let tx_exp: Transaction = tx_res.tx;
+        let tx_block_height = BITCOIND
+            .client
+            .get_block_header_verbose(&tx_res.block_hash.unwrap())
+            .unwrap()
+            .into_model()
+            .unwrap()
+            .height;
 
         let tx_info = blocking_client
             .get_tx_info(&txid)
@@ -553,21 +564,15 @@ mod test {
         assert_eq!(tx_info.to_tx(), tx_exp);
         assert_eq!(tx_info.size, tx_exp.total_size());
         assert_eq!(tx_info.weight(), tx_exp.weight());
-        assert_eq!(
-            tx_info.fee(),
-            tx_res
-                .fee
-                .map(|fee| Amount::from_btc(fee.abs()).unwrap())
-                .unwrap()
-        );
+        assert_eq!(tx_info.fee(), tx_res.fee.unwrap().unsigned_abs());
         assert!(tx_info.status.confirmed);
         // TODO(corepc): No .block_height field on GetTransaction ?
-        assert_eq!(tx_info.status.block_height, height);
+        assert_eq!(tx_info.status.block_height, Some(tx_block_height));
+        assert_eq!(tx_info.status.block_hash, tx_res.block_hash);
         assert_eq!(
-            tx_info.status.block_hash.map(|hash| hash.to_string()),
-            tx_res.block_hash
+            tx_info.status.block_time,
+            tx_res.block_time.map(|bt| bt as u64)
         );
-        assert!(tx_info.status.block_time >= Some(tx_res.time as u64));
 
         let txid = Txid::hash(b"not exist");
         assert_eq!(blocking_client.get_tx_info(&txid).unwrap(), None);
@@ -583,8 +588,7 @@ mod test {
             .client
             .get_block_hash(23)
             .unwrap()
-            .0
-            .parse()
+            .block_hash()
             .unwrap();
 
         let block_header = blocking_client.get_header_by_hash(&block_hash).unwrap();
@@ -601,15 +605,13 @@ mod test {
             .client
             .get_block_hash(21)
             .unwrap()
-            .0
-            .parse()
+            .block_hash()
             .unwrap();
         let next_block_hash = BITCOIND
             .client
             .get_block_hash(22)
             .unwrap()
-            .0
-            .parse()
+            .block_hash()
             .unwrap();
 
         let expected = BlockStatus {
@@ -658,8 +660,7 @@ mod test {
             .client
             .get_block_hash(21)
             .unwrap()
-            .0
-            .parse()
+            .block_hash()
             .unwrap();
 
         let expected = Some(BITCOIND.client.get_block(block_hash).unwrap());
@@ -835,8 +836,7 @@ mod test {
             .client
             .get_block_hash(21)
             .unwrap()
-            .0
-            .parse::<BlockHash>()
+            .block_hash()
             .unwrap();
 
         let block_hash_blocking = blocking_client.get_block_hash(21).unwrap();
@@ -854,8 +854,7 @@ mod test {
             .client
             .get_block_hash(23)
             .unwrap()
-            .0
-            .parse()
+            .block_hash()
             .unwrap();
 
         let txid_at_block_index = blocking_client
@@ -897,8 +896,13 @@ mod test {
         let _miner = MINER.lock().await;
         generate_blocks_and_wait(1);
 
-        let get_tx = BITCOIND.client.get_transaction(txid).unwrap();
-        let expected_tx: Transaction = consensus::encode::deserialize_hex(&get_tx.hex).unwrap();
+        let expected_tx = BITCOIND
+            .client
+            .get_transaction(txid)
+            .unwrap()
+            .into_model()
+            .unwrap()
+            .tx;
         let script = &expected_tx.output[0].script_pubkey;
         let scripthash_txs_txids: Vec<Txid> = blocking_client
             .scripthash_txs(script, None)

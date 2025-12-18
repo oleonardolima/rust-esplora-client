@@ -21,8 +21,9 @@ pub use bitcoin::consensus::{deserialize, serialize};
 use bitcoin::hash_types::TxMerkleNode;
 pub use bitcoin::hex::FromHex;
 pub use bitcoin::{
-    absolute, block, transaction, Amount, BlockHash, CompactTarget, FeeRate, OutPoint, ScriptBuf,
-    Transaction, TxIn, TxOut, Txid, Weight, Witness, Wtxid,
+    absolute, block, transaction, Address, Amount, Block, BlockHash, CompactTarget, FeeRate,
+    OutPoint, Script, ScriptBuf, ScriptHash, Transaction, TxIn, TxOut, Txid, Weight, Witness,
+    Wtxid,
 };
 
 /// Information about a previous output.
@@ -312,6 +313,7 @@ pub struct MempoolRecentTx {
     pub value: u64,
 }
 
+/// The result for a broadcasted package of [`Transaction`]s.
 #[derive(Deserialize, Debug)]
 pub struct SubmitPackageResult {
     /// The transaction package result message. "success" indicates all transactions were accepted
@@ -325,6 +327,7 @@ pub struct SubmitPackageResult {
     pub replaced_transactions: Option<Vec<Txid>>,
 }
 
+/// The result [`Transaction`] for a broadcasted package of [`Transaction`]s.
 #[derive(Deserialize, Debug)]
 pub struct TxResult {
     /// The transaction id.
@@ -343,6 +346,7 @@ pub struct TxResult {
     pub error: Option<String>,
 }
 
+/// The mempool fees for a resulting [`Transaction`] broadcasted by a package of [`Transaction`]s.
 #[derive(Deserialize, Debug)]
 pub struct MempoolFeesSubmitPackage {
     /// Transaction fee.
@@ -358,7 +362,7 @@ pub struct MempoolFeesSubmitPackage {
         deserialize_with = "deserialize_feerate"
     )]
     pub effective_feerate: Option<FeeRate>,
-    /// If [`Self::effective_fee_rate`] is provided, this holds the [`Wtxid`]s of the transactions
+    /// If [`Self::effective_feerate`] is provided, this holds the [`Wtxid`]s of the transactions
     /// whose fees and vsizes are included in effective-feerate.
     #[serde(rename = "effective-includes")]
     pub effective_includes: Option<Vec<Wtxid>>,

@@ -381,12 +381,12 @@ impl<S: Sleeper> AsyncClient<S> {
 
     /// Broadcast a package of [`Transaction`] to Esplora
     ///
-    /// if `maxfeerate` is provided, any transaction whose
+    /// If `maxfeerate` is provided, any transaction whose
     /// fee is higher will be rejected
     ///
-    /// if  `maxburnamount` is provided, any transaction
+    /// If `maxburnamount` is provided, any transaction
     /// with higher provably unspendable outputs amount
-    /// will be rejected
+    /// will be rejected.
     pub async fn submit_package(
         &self,
         transactions: &[Transaction],

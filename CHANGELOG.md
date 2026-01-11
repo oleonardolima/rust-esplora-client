@@ -14,11 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: add new `get_address_utxos` method #134
 - feat: add new `Utxo` and `UtxoStatus` API types #134
 - feat: add justfile #140
-- feat(api): add `OutputSpendStatus` struct #143
 - feat(api): add `ScriptHashTxsSummary` and `ScriptHashStats` structs #143
-- feat(api): add `BlockInformation` struct #143
+- feat(api): add `BlockInfo` struct #143
 - feat(api): add `MempoolStats` struct #143
-- feat(api): add `MempoolRecentTxs` struct #143
+- feat(api): add `MempoolRecentTx` struct #143
 - feat(client): add `get_tx_outspends` method (`GET /tx/:txid/outspends`) #143
 - feat(client): add `get_scripthash_stats` method (`GET /scripthash/:hash`) #143
 - feat(client): add `get_mempool_address_txs` method (`GET /address/:address/txs/mempool`) #143
@@ -29,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat(client): add `get_block_txs` method (`GET /block/:hash/txs[/:start_index]`) #143
 - feat(client): add `get_mempool_stats` method (`GET /mempool`) #143
 - feat(client): add `get_mempool_txids` method (`GET /mempool/txids`) #143
-- feat(client): add `get_mempool_recent_txids` method (`GET /mempool/recent`) #143
+- feat(client): add `get_mempool_recent_txs` method (`GET /mempool/recent`) #143
 - chore(docs): add missing documentation #147
 - feat(client): add new `submit_package` API to `BlockingClient` and `AsyncClient` #114
 - feat(api): add new `SubmitPackageResult`, `TxResult`, and `MempoolFeesSubmitPackage` API structures #114

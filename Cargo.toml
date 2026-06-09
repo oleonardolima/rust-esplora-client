@@ -24,7 +24,7 @@ serde = { version = "1.0.194", features = ["derive"] }
 serde_json = { version = "1.0.117", features = ["std"], default-features = false }
 bitcoin = { version = "0.32", features = ["serde", "std"], default-features = false }
 hex = { version = "0.2.2", package = "hex-conservative" }
-bitreq = { version = "0.3.5", optional = true }
+bitreq = { version = "0.3.7", optional = true }
 # Default runtime when running async tests
 tokio = { version = "1", features = ["time"], optional = true }
 

@@ -1,6 +1,8 @@
-on: [push, pull_request]
-
 name: Code Coverage
+
+on:
+    push:
+    pull_request:
 
 permissions: {}
 env:
@@ -8,54 +10,67 @@ env:
     RUST_BACKTRACE: 1
 
 jobs:
-  Codecov:
-    name: Code Coverage
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: "-Cinstrument-coverage"
-      RUSTDOCFLAGS: "-Cinstrument-coverage"
-      LLVM_PROFILE_FILE: "report-%p-%m.profraw"
+    code-coverage:
+        name: Code Coverage
+        runs-on: ubuntu-latest
+        env:
+            RUSTFLAGS: "-Cinstrument-coverage"
+            RUSTDOCFLAGS: "-Cinstrument-coverage"
+            LLVM_PROFILE_FILE: "report-%p-%m.profraw"
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-            persist-credentials: false
-      - name: Install lcov tools
-        run: sudo apt-get install lcov -y
-      - name: Install rustup
-        run: curl https://sh.rustup.rs -sSf | sh -s -- -y
-      - name: Set default toolchain
-        run: rustup default nightly
-      - name: Set profile
-        run: rustup set profile minimal
-      - name: Add llvm tools
-        run: rustup component add llvm-tools-preview
-      - name: Update toolchain
-        run: rustup update
-      - name: Cache cargo
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Install grcov
-        run: if [[ ! -e ~/.cargo/bin/grcov ]]; then cargo install grcov; fi
-      - name: Test
-        run: cargo test -- --test-threads=1
-      - name: Run grcov
-        run: mkdir coverage; grcov . --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore '/*' -o ./coverage/lcov.info
-      - name: Generate HTML coverage report
-        run: genhtml -o coverage-report.html ./coverage/lcov.info
-      - name: Coveralls upload
-        uses: coverallsapp/github-action@648a8eb78e6d50909eff900e4ec85cab4524a45b # v2.3.7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage-report
-          path: coverage-report.html
+        steps:
+            - name: Checkout Repository
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+              with:
+                  persist-credentials: false
+
+            - name: Install lcov Tools
+              run: sudo apt-get install lcov -y
+
+            - name: Install rustup
+              run: curl https://sh.rustup.rs -sSf | sh -s -- -y
+
+            - name: Set Default Toolchain
+              run: rustup default nightly
+
+            - name: Set Minimal Profile
+              run: rustup set profile minimal
+
+            - name: Add llvm Tools
+              run: rustup component add llvm-tools-preview
+
+            - name: Update Toolchain
+              run: rustup update
+
+            - name: Setup cargo Cache
+              uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+              with:
+                  path: |
+                      ~/.cargo/bin/
+                      ~/.cargo/registry/index/
+                      ~/.cargo/registry/cache/
+                      ~/.cargo/git/db/
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+            - name: Install grcov
+              run: if [[ ! -e ~/.cargo/bin/grcov ]]; then cargo install grcov; fi
+
+            - name: Run Tests
+              run: cargo test -- --test-threads=1
+
+            - name: Run grcov
+              run: mkdir coverage; grcov . --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore '/*' -o ./coverage/lcov.info
+
+            - name: Generate HTML Coverage Report
+              run: genhtml -o coverage-report.html ./coverage/lcov.info
+
+            - name: Coveralls Upload
+              uses: coverallsapp/github-action@648a8eb78e6d50909eff900e4ec85cab4524a45b # v2.3.7
+              with:
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Upload Artifact
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: coverage-report
+                  path: coverage-report.html

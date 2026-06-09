@@ -30,18 +30,17 @@ A `justfile` is provided for convenience. Run `just` to see available commands:
 > Bitcoin Esplora API client library
 
 Available recipes:
-    audit       # Run `cargo audit` [alias: a]
-    build       # Build `rust-esplora-client` [alias: b]
-    check       # Check code formatting, compilation, and linting [alias: c]
-    check-sigs  # Checks whether all commits in this branch are signed [alias: cs]
-    doc         # Generate documentation [alias: d]
-    doc-open    # Generate and open documentation [alias: do]
-    fmt         # Format code [alias: f]
-    lock        # Regenerate Cargo-recent.lock and Cargo-minimal.lock [alias: l]
-    pre-push    # Run pre-push checks [alias: p]
-    test        # Run tests [alias: t]
-    test-matrix # Run tests with the toolchain + lockfile matrix
-    zizmor      # Run Zizmor Static Analysis [alias: z]
+    audit      # Run `cargo audit` [alias: a]
+    build      # Build `rust-esplora-client` [alias: b]
+    check      # Check code formatting, compilation, and linting [alias: c]
+    check-sigs # Checks whether all commits in this branch are signed [alias: cs]
+    doc        # Generate documentation [alias: d]
+    doc-open   # Generate and open documentation [alias: do]
+    fmt        # Format code [alias: f]
+    lock       # Regenerate Cargo-recent.lock and Cargo-minimal.lock [alias: l]
+    pre-push   # Run pre-push checks [alias: p]
+    test       # Run tests [alias: t]
+    zizmor     # Run Zizmor Static Analysis [alias: z]
 ```
 
 ## Minimum Supported Rust Version

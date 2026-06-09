@@ -57,8 +57,8 @@ blocking-https-rustls = ["blocking", "bitreq/https-rustls"]
 blocking-https-rustls-probe = ["blocking", "bitreq/https-rustls-probe"]
 
 [package.metadata.rbmt.toolchains]
-stable = "1.95.0"
-nightly = "nightly-2026-03-18"
+stable = "1.96.0"
+nightly = "nightly-2026-05-08"
 
 [package.metadata.docs.rs]
 all-features = true

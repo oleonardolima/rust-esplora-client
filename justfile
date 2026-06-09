@@ -27,7 +27,7 @@ build:
 check:
     RBMT_LOG_LEVEL=progress cargo rbmt fmt --check
     RBMT_LOG_LEVEL=progress cargo rbmt lint
-    RBMT_LOG_LEVEL=progress cargo rbmt docs
+    RBMT_LOG_LEVEL=progress cargo rbmt docsrs
 
 [doc: "Checks whether all commits in this branch are signed"]
 check-sigs:
@@ -35,13 +35,11 @@ check-sigs:
 
 [doc: "Generate documentation"]
 doc:
-    RBMT_LOG_LEVEL=progress cargo rbmt docs
-    RBMT_LOG_LEVEL=progress cargo rbmt run doc --no-deps
+    RBMT_LOG_LEVEL=progress cargo rbmt docsrs
 
 [doc: "Generate and open documentation"]
 doc-open:
-    RBMT_LOG_LEVEL=progress cargo rbmt docs
-    RBMT_LOG_LEVEL=progress cargo rbmt run doc --no-deps --open
+    RBMT_LOG_LEVEL=progress cargo rbmt docsrs --open
 
 [doc: "Format code"]
 fmt:
@@ -53,10 +51,6 @@ lock:
 
 [doc: "Run tests"]
 test:
-    RBMT_LOG_LEVEL=verbose cargo rbmt test
-
-[doc: "Run tests with the toolchain + lockfile matrix"]
-test-matrix:
     RBMT_LOG_LEVEL=verbose cargo rbmt test --toolchain stable --lock-file recent
     RBMT_LOG_LEVEL=verbose cargo rbmt test --toolchain msrv --lock-file minimal
 

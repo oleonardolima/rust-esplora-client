@@ -178,9 +178,9 @@ dependencies = [
 
 [[package]]
 name = "bitcoind"
-version = "0.38.0"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "deae3e9d99e37df8e82023e9f253cabe4b26f8a24a3e4e415f97a546f5280b66"
+checksum = "e6ae2e87ae73ae44f76807ec87d30545e84788dfe2620cd825d902c69168d58a"
 dependencies = [
  "anyhow",
  "bitcoin_hashes 0.13.0",
@@ -209,9 +209,9 @@ checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
 
 [[package]]
 name = "bitreq"
-version = "0.3.5"
+version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6df90cd78f0510165fd370574676aeb57dbec0ee3bfff68645bb7b0e9a65dbd5"
+checksum = "b65c2e1ab98050c93cc9ada070d5070e014329c65196d03f6f8f1f75c2666f37"
 dependencies = [
  "base64 0.22.1",
  "native-tls",
@@ -305,9 +305,9 @@ checksum = "06ea2b9bc92be3c2baa9334a323ebca2d6f074ff852cd1d7b11064035cd3868f"
 
 [[package]]
 name = "corepc-client"
-version = "0.13.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "168e5075162cb8c253e8eea1575391c2ef8adde050bf9f3ef29d1cb109364388"
+checksum = "9f6120efc48c970c94978f846c3c1562cb5e3afa8b00039f3a03f9f68ce4b5d6"
 dependencies = [
  "bitcoin",
  "corepc-types",
@@ -319,9 +319,9 @@ dependencies = [
 
 [[package]]
 name = "corepc-types"
-version = "0.12.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1583872320eb2ac629c36753023fd072f1ca1b3b74b20cc62bab055b54278789"
+checksum = "f095534efdb8f2f43d48b9c3e9f35aefdf29ec6a5f1895064f575a67bc2a8dfe"
 dependencies = [
  "bitcoin",
  "serde",
@@ -349,10 +349,11 @@ dependencies = [
 
 [[package]]
 name = "electrsd"
-version = "0.38.0"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f262d0fe6d24419a1b07ca321a85eca84ef0d10b4e4e267ba5fe48a8ec03dd9"
+checksum = "205be08632bd3a374d70452b1662c468b35e66bef57a53cbbb7b8c1f58d2f328"
 dependencies = [
+ "anyhow",
  "bitcoin_hashes 0.14.0",
  "bitcoind",
  "bitreq",

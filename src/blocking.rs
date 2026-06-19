@@ -1,6 +1,31 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Esplora by way of `minreq` HTTP client.
+//! # Blocking Esplora Client
+//!
+//! This module implements [`BlockingClient`], a synchronous HTTP client for
+//! interacting with an [Esplora] server by way of [`bitreq`].
+//!
+//! Use this client from synchronous applications, command-line tools, tests,
+//! or code paths where blocking the current thread is acceptable. Each method
+//! sends the request immediately and returns only after the response body has
+//! been read and decoded.
+//!
+//! The client is configured through [`Builder`], including the
+//! base URL, proxy, socket timeout, custom headers, and retry count.
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! # fn example() -> Result<(), esplora_client::Error> {
+//!
+//! let client = esplora_client::Builder::new("https://mempool.space/api").build_blocking();
+//! let height = client.get_height()?;
+//!
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [Esplora]: https://github.com/Blockstream/esplora/blob/master/API.md
 
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
@@ -25,23 +50,43 @@ use crate::{
 #[allow(deprecated)]
 use crate::BlockSummary;
 
-/// A blocking client for interacting with an Esplora API server.
+/// A synchronous client for interacting with an Esplora API server.
+///
+/// Use [`Builder`] to construct an instance of this client. The client stores
+/// the server base URL and request configuration, then exposes convenience
+/// methods for the transaction, block, address, scripthash, fee-estimate, and
+/// mempool endpoints.
+///
+/// Each method blocks the current thread until the HTTP request completes and
+/// the response is parsed into the requested type.
+///
+/// # Retries
+///
+/// Failed requests are automatically retried up to `max_retries` times
+/// (configured via [`Builder`]) with exponential backoff, but only for
+/// retryable HTTP status codes. See [`crate::RETRYABLE_ERROR_CODES`] for the
+/// full list.
 #[derive(Debug, Clone)]
 pub struct BlockingClient {
     /// The URL of the Esplora server.
     url: String,
-    /// The proxy is ignored when targeting `wasm32`.
+    /// The URL of the proxy host.
+    ///
+    /// NOTE: The proxy is ignored when targeting `wasm32`.
     pub proxy: Option<String>,
-    /// Socket timeout.
+    /// Per-request socket timeout, in seconds.
     pub timeout: Option<u64>,
-    /// HTTP headers to set on every request made to Esplora server
+    /// HTTP headers to set on every request made to the Esplora server.
     pub headers: HashMap<String, String>,
-    /// Number of times to retry a request
+    /// Maximum number of retry attempts for retryable responses.
     pub max_retries: usize,
 }
 
 impl BlockingClient {
-    /// Build a blocking client from a [`Builder`]
+    /// Build a [`BlockingClient`] from a [`Builder`].
+    ///
+    /// This consumes the builder configuration and stores it on the client.
+    /// No network request is made until a client method is called.
     pub fn from_builder(builder: Builder) -> Self {
         Self {
             url: builder.base_url,
@@ -52,12 +97,17 @@ impl BlockingClient {
         }
     }
 
-    /// Get the underlying base URL.
+    /// Return the base URL of the Esplora server this client connects to.
+    ///
+    /// The returned value is the exact string provided to [`Builder::new`].
     pub fn url(&self) -> &str {
         &self.url
     }
 
     /// Build a HTTP [`Request`] with given [`Method`] and URI `path`.
+    ///
+    /// Configures the request with the proxy, timeout, and headers set on
+    /// this client. Used internally by all other request helper methods.
     pub(crate) fn build_request(&self, method: Method, path: &str) -> Result<Request, Error> {
         let mut request = Request::new(method, format!("{}{}", self.url, path));
 
@@ -76,8 +126,10 @@ impl BlockingClient {
         Ok(request)
     }
 
-    /// Make an HTTP POST request to given URL, converting any `T` that
-    /// implement [`Into<Body>`] and setting query parameters, if any.
+    /// Make an HTTP POST request to `path` with `body`.
+    ///
+    /// Configures query parameters, if any, and returns the raw response after
+    /// checking the HTTP status code.
     ///
     /// # Errors
     ///
@@ -106,8 +158,8 @@ impl BlockingClient {
         Ok(response)
     }
 
-    /// Makes a HTTP GET request to the given `url`, retrying failed attempts
-    /// for retryable error codes until max retries hit.
+    /// Sends a GET request to `url`, retrying on retryable status codes
+    /// with exponential backoff until [`BlockingClient::max_retries`] is reached.
     fn get_with_retry(&self, url: &str) -> Result<Response, Error> {
         let mut delay = BASE_BACKOFF_MILLIS;
         let mut attempts = 0;
@@ -124,17 +176,14 @@ impl BlockingClient {
         }
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to any `T` that
-    /// implement [`bitcoin::consensus::Decodable`].
+    /// Makes a GET request to `path`, deserializing the response body as
+    /// raw bytes into `T` using [`bitcoin::consensus::Decodable`].
     ///
-    /// It should be used when requesting Esplora endpoints that can be directly
-    /// deserialized to native `rust-bitcoin` types, which implements
-    /// [`bitcoin::consensus::Decodable`] from `&[u8]`.
+    /// Use this for endpoints that return raw binary Bitcoin data.
     ///
     /// # Errors
     ///
-    /// This function will return an error either from the HTTP client, or the
-    /// [`bitcoin::consensus::Decodable`] deserialization.
+    /// Returns an [`Error`] if the request fails or deserialization fails.
     fn get_response<T: Decodable>(&self, path: &str) -> Result<T, Error> {
         let response = self.get_with_retry(path)?;
 
@@ -147,11 +196,9 @@ impl BlockingClient {
         Ok(deserialize::<T>(response.as_bytes())?)
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    /// Makes a GET request to `path`, returning `None` on a 404 response.
     ///
-    /// It uses [`BlockingClient::get_response`] internally.
-    ///
-    /// See [`BlockingClient::get_response`] above for full documentation.
+    /// Delegates to [`Self::get_response`]. See its documentation for details.
     fn get_opt_response<T: Decodable>(&self, path: &str) -> Result<Option<T>, Error> {
         match self.get_response(path) {
             Ok(response) => Ok(Some(response)),
@@ -160,17 +207,15 @@ impl BlockingClient {
         }
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to any `T` that
-    /// implements [`bitcoin::consensus::Decodable`].
+    /// Makes a GET request to `path`, deserializing the hex-encoded response
+    /// body into `T` using [`bitcoin::consensus::Decodable`].
     ///
-    /// It should be used when requesting Esplora endpoints that are expected
-    /// to return a hex string decodable to native `rust-bitcoin` types which
-    /// implement [`bitcoin::consensus::Decodable`] from `&[u8]`.
+    /// Use this for endpoints that return hex-encoded Bitcoin data.
     ///
     /// # Errors
     ///
-    /// This function will return an error either from the HTTP client, or the
-    /// [`bitcoin::consensus::Decodable`] deserialization.
+    /// Returns an [`Error`] if the request fails, hex decoding fails,
+    /// or consensus deserialization fails.
     fn get_response_hex<T: Decodable>(&self, path: &str) -> Result<T, Error> {
         let response = self.get_with_retry(path)?;
 
@@ -184,12 +229,9 @@ impl BlockingClient {
         deserialize(&Vec::from_hex(hex_str)?).map_err(Error::BitcoinEncoding)
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    /// Makes a GET request to `path`, returning `None` on a 404 response.
     ///
-    /// It uses [`BlockingClient::get_response_hex`] internally.
-    ///
-    /// See [`BlockingClient::get_response_hex`] above for full
-    /// documentation.
+    /// Delegates to [`Self::get_response_hex`]. See its documentation for details.
     fn get_opt_response_hex<T: Decodable>(&self, path: &str) -> Result<Option<T>, Error> {
         match self.get_response_hex(path) {
             Ok(res) => Ok(Some(res)),
@@ -198,16 +240,15 @@ impl BlockingClient {
         }
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to any `T` that
-    /// implements [`serde::de::DeserializeOwned`].
+    /// Makes a GET request to `path`, deserializing the response body as JSON
+    /// into `T` using [`serde::de::DeserializeOwned`].
     ///
-    /// It should be used when requesting Esplora endpoints that have a specific
-    /// defined API, mostly defined in [`crate::api`].
+    /// Use this for endpoints that return Esplora-specific JSON types, as
+    /// defined in [`crate::api`].
     ///
     /// # Errors
     ///
-    /// This function will return an error either from the HTTP client, or the
-    /// [`serde::de::DeserializeOwned`] deserialization.
+    /// Returns an [`Error`] if the request fails or JSON deserialization fails.
     fn get_response_json<'a, T: serde::de::DeserializeOwned>(
         &'a self,
         path: &'a str,
@@ -223,12 +264,9 @@ impl BlockingClient {
         response.json::<T>().map_err(Error::BitReq)
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    /// Makes a GET request to `path`, returning `None` on a 404 response.
     ///
-    /// It uses [`BlockingClient::get_response_json`] internally.
-    ///
-    /// See [`BlockingClient::get_response_json`] above for full
-    /// documentation.
+    /// Delegates to [`Self::get_response_json`]. See its documentation for details.
     fn get_opt_response_json<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
@@ -240,14 +278,14 @@ impl BlockingClient {
         }
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `String`.
+    /// Makes a GET request to `path`, returning the response body as a [`String`].
     ///
-    /// It should be used when requesting Esplora endpoints that can return
-    /// `String` formatted data that can be parsed downstream.
+    /// Use this for endpoints that return plain text data that needs further
+    /// parsing downstream.
     ///
     /// # Errors
     ///
-    /// This function will return an error either from the HTTP client.
+    /// Returns an [`Error`] if the request fails.
     fn get_response_text(&self, path: &str) -> Result<String, Error> {
         let response = self.get_with_retry(path)?;
 
@@ -260,12 +298,9 @@ impl BlockingClient {
         Ok(response.as_str()?.to_string())
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    /// Makes a GET request to `path`, returning `None` on a 404 response.
     ///
-    /// It uses [`BlockingClient::get_response_text`] internally.
-    ///
-    /// See [`BlockingClient::get_response_text`] above for full
-    /// documentation.
+    /// Delegates to [`Self::get_response_text`]. See its documentation for details.
     fn get_opt_response_text(&self, path: &str) -> Result<Option<String>, Error> {
         match self.get_response_text(path) {
             Ok(s) => Ok(Some(s)),
@@ -274,12 +309,17 @@ impl BlockingClient {
         }
     }
 
-    /// Get a [`Transaction`] option given its [`Txid`]
+    /// Get a raw [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns `None` if the transaction is not found.
     pub fn get_tx(&self, txid: &Txid) -> Result<Option<Transaction>, Error> {
         self.get_opt_response(&format!("/tx/{txid}/raw"))
     }
 
-    /// Get a [`Transaction`] given its [`Txid`].
+    /// Get a raw [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns an [`Error::TransactionNotFound`] if the transaction is not found.
+    /// Prefer [`Self::get_tx`] if you want to handle the not-found case explicitly.
     pub fn get_tx_no_opt(&self, txid: &Txid) -> Result<Transaction, Error> {
         match self.get_tx(txid) {
             Ok(Some(tx)) => Ok(tx),
@@ -288,8 +328,10 @@ impl BlockingClient {
         }
     }
 
-    /// Get a [`Txid`] of a transaction given its index in a block with a given
-    /// hash.
+    /// Get the [`Txid`] of the transaction at position `index` within the
+    /// block identified by `block_hash`.
+    ///
+    /// Returns `None` if the block or index is not found.
     pub fn get_txid_at_block_index(
         &self,
         block_hash: &BlockHash,
@@ -301,50 +343,73 @@ impl BlockingClient {
         }
     }
 
-    /// Get the status of a [`Transaction`] given its [`Txid`].
+    /// Get the confirmation status of a [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns a [`TxStatus`] containing whether the transaction is confirmed,
+    /// and if so, the block height, hash, and timestamp it was confirmed in.
     pub fn get_tx_status(&self, txid: &Txid) -> Result<TxStatus, Error> {
         self.get_response_json(&format!("/tx/{txid}/status"))
     }
 
-    /// Get transaction info given its [`Txid`].
+    /// Get an [`EsploraTx`] given its [`Txid`].
+    ///
+    /// Unlike [`Self::get_tx`], returns the Esplora-specific [`EsploraTx`]
+    /// type, which includes additional metadata such as confirmation status,
+    /// fee, and weight. Returns `None` if the transaction is not found.
     pub fn get_tx_info(&self, txid: &Txid) -> Result<Option<EsploraTx>, Error> {
         self.get_opt_response_json(&format!("/tx/{txid}"))
     }
 
-    /// Get the spend status of a [`Transaction`]'s outputs, given its [`Txid`].
+    /// Get the spend status of all outputs in a [`Transaction`], given its [`Txid`].
+    ///
+    /// Returns a [`Vec`] of [`OutputStatus`], one per output, ordered as they
+    /// appear in the [`Transaction`].
     pub fn get_tx_outspends(&self, txid: &Txid) -> Result<Vec<OutputStatus>, Error> {
         self.get_response_json(&format!("/tx/{txid}/outspends"))
     }
 
-    /// Get a [`BlockHeader`] given a particular [`BlockHash`].
+    /// Get the [`BlockHeader`] of a [`Block`] given its [`BlockHash`].
     pub fn get_header_by_hash(&self, block_hash: &BlockHash) -> Result<BlockHeader, Error> {
         self.get_response_hex(&format!("/block/{block_hash}/header"))
     }
 
-    /// Get the [`BlockStatus`] given a particular [`BlockHash`].
+    /// Get the [`BlockStatus`] of a [`Block`] given its [`BlockHash`].
+    ///
+    /// Returns a [`BlockStatus`] indicating whether this [`Block`] is part of
+    /// the best chain, its height, and the [`BlockHash`] of the next [`Block`],
+    /// if any.
     pub fn get_block_status(&self, block_hash: &BlockHash) -> Result<BlockStatus, Error> {
         self.get_response_json(&format!("/block/{block_hash}/status"))
     }
 
-    /// Get a [`Block`] given a particular [`BlockHash`].
+    /// Get the full [`Block`] with the given [`BlockHash`].
+    ///
+    /// Returns `None` if the [`Block`] is not found.
     pub fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>, Error> {
         self.get_opt_response(&format!("/block/{block_hash}/raw"))
     }
 
-    /// Get a merkle inclusion proof for a [`Transaction`] with the given
-    /// [`Txid`].
+    /// Get a Merkle inclusion proof for a [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns a [`MerkleProof`] that can be used to verify the transaction's
+    /// inclusion in a block. Returns `None` if the transaction is not found or
+    /// is unconfirmed.
     pub fn get_merkle_proof(&self, txid: &Txid) -> Result<Option<MerkleProof>, Error> {
         self.get_opt_response_json(&format!("/tx/{txid}/merkle-proof"))
     }
 
-    /// Get a [`MerkleBlock`] inclusion proof for a [`Transaction`] with the
-    /// given [`Txid`].
+    /// Get a [`MerkleBlock`] inclusion proof for a [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns `None` if the transaction is not found or is unconfirmed.
     pub fn get_merkle_block(&self, txid: &Txid) -> Result<Option<MerkleBlock>, Error> {
         self.get_opt_response_hex(&format!("/tx/{txid}/merkleblock-proof"))
     }
 
-    /// Get the spending status of an output given a [`Txid`] and the output
-    /// index.
+    /// Get the spend status of a specific output, identified by its [`Txid`]
+    /// and output index.
+    ///
+    /// Returns an [`OutputStatus`] indicating whether the output has been
+    /// spent, and if so, by which transaction. Returns `None` if not found.
     pub fn get_output_status(
         &self,
         txid: &Txid,
@@ -353,7 +418,14 @@ impl BlockingClient {
         self.get_opt_response_json(&format!("/tx/{txid}/outspend/{index}"))
     }
 
-    /// Broadcast a [`Transaction`] to Esplora
+    /// Broadcast a [`Transaction`] to the Esplora server.
+    ///
+    /// The transaction is serialized and sent as a hex-encoded string.
+    /// Returns the [`Txid`] of the broadcasted transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the request fails or the server rejects the transaction.
     pub fn broadcast(&self, transaction: &Transaction) -> Result<Txid, Error> {
         let body = serialize::<Transaction>(transaction).to_lower_hex_string();
 
@@ -363,14 +435,17 @@ impl BlockingClient {
         Ok(txid)
     }
 
-    /// Broadcast a package of [`Transaction`]s to Esplora.
+    /// Broadcast a package of [`Transaction`]s to the Esplora server.
     ///
-    /// If `maxfeerate` is provided, any transaction whose
-    /// fee is higher will be rejected.
+    /// Returns a [`SubmitPackageResult`] containing the result for each
+    /// transaction in the package, keyed by [`bitcoin::Wtxid`].
     ///
-    /// If `maxburnamount` is provided, any transaction
-    /// with higher provably unspendable outputs amount
-    /// will be rejected.
+    /// Optionally, `maxfeerate` and `maxburnamount` can be provided to reject
+    /// transactions that exceed these thresholds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the request fails or the server rejects the package.
     pub fn submit_package(
         &self,
         transactions: &[Transaction],
@@ -404,7 +479,7 @@ impl BlockingClient {
         Ok(result)
     }
 
-    /// Get the height of the current blockchain tip.
+    /// Get the block height of the current blockchain tip.
     pub fn get_height(&self) -> Result<u32, Error> {
         self.get_response_text("/blocks/tip/height")
             .map(|s| u32::from_str(s.as_str()).map_err(Error::Parsing))?
@@ -416,25 +491,28 @@ impl BlockingClient {
             .map(|s| BlockHash::from_str(s.as_str()).map_err(Error::HexToArray))?
     }
 
-    /// Get the [`BlockHash`] of a specific block height
+    /// Get the [`BlockHash`] of a [`Block`] given its height.
     pub fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, Error> {
         self.get_response_text(&format!("/block-height/{block_height}"))
             .map(|s| BlockHash::from_str(s.as_str()).map_err(Error::HexToArray))?
     }
 
-    /// Get statistics about the mempool.
+    /// Get global statistics about the mempool.
+    ///
+    /// Returns a [`MempoolStats`] containing the transaction count, total
+    /// virtual size, total fees, and fee rate histogram.
     pub fn get_mempool_stats(&self) -> Result<MempoolStats, Error> {
         self.get_response_json("/mempool")
     }
 
-    /// Get a list of the last 10 [`Transaction`]s to enter the mempool.
+    /// Get the last 10 [`MempoolRecentTx`]s to enter the mempool.
     pub fn get_mempool_recent_txs(&self) -> Result<Vec<MempoolRecentTx>, Error> {
         self.get_response_json("/mempool/recent")
     }
 
-    /// Get the full list of [`Txid`]s in the mempool.
+    /// Get the full list of [`Txid`]s currently in the mempool.
     ///
-    /// The order of the txids is arbitrary and does not match bitcoind's.
+    /// The order of the returned [`Txid`]s is arbitrary.
     pub fn get_mempool_txids(&self) -> Result<Vec<Txid>, Error> {
         self.get_response_json("/mempool/txids")
     }
@@ -450,25 +528,31 @@ impl BlockingClient {
         Ok(estimates)
     }
 
-    /// Get information about a specific address, includes confirmed balance and transactions in
-    /// the mempool.
+    /// Get statistics about an [`Address`].
+    ///
+    /// Returns an [`AddressStats`] containing confirmed and mempool transaction
+    /// summaries for the given address, including funded and spent output
+    /// counts and their total values.
     pub fn get_address_stats(&self, address: &Address) -> Result<AddressStats, Error> {
         let path = format!("/address/{address}");
         self.get_response_json(&path)
     }
 
-    /// Get statistics about a particular [`Script`] hash's confirmed and mempool transactions.
+    /// Get statistics about a [`Script`] hash's confirmed and mempool transactions.
+    ///
+    /// Returns a [`ScriptHashStats`] containing transaction summaries for the
+    /// SHA256 hash of the given [`Script`].
     pub fn get_scripthash_stats(&self, script: &Script) -> Result<ScriptHashStats, Error> {
         let script_hash = sha256::Hash::hash(script.as_bytes());
         let path = format!("/scripthash/{script_hash}");
         self.get_response_json(&path)
     }
 
-    /// Get transaction history for the specified address, sorted with newest
-    /// first.
+    /// Get confirmed transaction history for an [`Address`], sorted newest first.
     ///
     /// Returns up to 50 mempool transactions plus the first 25 confirmed transactions.
-    /// More can be requested by specifying the last txid seen by the previous query.
+    /// To paginate, pass the [`Txid`] of the last transaction seen in the
+    /// previous response as `last_seen`.
     pub fn get_address_txs(
         &self,
         address: &Address,
@@ -482,17 +566,17 @@ impl BlockingClient {
         self.get_response_json(&path)
     }
 
-    /// Get mempool [`Transaction`]s for the specified [`Address`], sorted with newest first.
+    /// Get unconfirmed mempool [`EsploraTx`]s for an [`Address`], sorted newest first.
     pub fn get_mempool_address_txs(&self, address: &Address) -> Result<Vec<EsploraTx>, Error> {
         let path = format!("/address/{address}/txs/mempool");
 
         self.get_response_json(&path)
     }
 
-    /// Get transaction history for the specified scripthash,
-    /// sorted with newest first. Returns 25 transactions per page.
-    /// More can be requested by specifying the last txid seen by the previous
-    /// query.
+    /// Get confirmed transaction history for a [`Script`] hash, sorted newest first.
+    ///
+    /// Returns 25 transactions per page. To paginate, pass the [`Txid`] of the
+    /// last transaction seen in the previous response as `last_seen`.
     pub fn get_scripthash_txs(
         &self,
         script: &Script,
@@ -506,8 +590,7 @@ impl BlockingClient {
         self.get_response_json(&path)
     }
 
-    /// Get mempool [`Transaction`] history for the
-    /// specified [`Script`] hash, sorted with newest first.
+    /// Get unconfirmed mempool [`EsploraTx`]s for a [`Script`] hash, sorted newest first.
     pub fn get_mempool_scripthash_txs(&self, script: &Script) -> Result<Vec<EsploraTx>, Error> {
         let script_hash = sha256::Hash::hash(script.as_bytes());
         let path = format!("/scripthash/{script_hash:x}/txs/mempool");
@@ -515,25 +598,33 @@ impl BlockingClient {
         self.get_response_json(&path)
     }
 
-    /// Get a summary about a [`Block`], given its [`BlockHash`].
+    /// Get a [`BlockInfo`] summary for the [`Block`] with the given [`BlockHash`].
+    ///
+    /// [`BlockInfo`] includes metadata such as the height, timestamp,
+    /// [`Transaction`] count, size, and [`Weight`](bitcoin::Weight).
+    ///
+    /// This method does not return the full [`Block`].
     pub fn get_block_info(&self, blockhash: &BlockHash) -> Result<BlockInfo, Error> {
         let path = format!("/block/{blockhash}");
 
         self.get_response_json(&path)
     }
 
-    /// Get all [`Txid`]s that belong to a [`Block`] identified by it's [`BlockHash`].
+    /// Get all [`Txid`]s of [`Transaction`]s included in the [`Block`] with the
+    /// given [`BlockHash`].
     pub fn get_block_txids(&self, blockhash: &BlockHash) -> Result<Vec<Txid>, Error> {
         let path = format!("/block/{blockhash}/txids");
 
         self.get_response_json(&path)
     }
 
-    /// Get up to 25 [`Transaction`]s from a [`Block`], given its [`BlockHash`],
-    /// beginning at `start_index` (starts from 0 if `start_index` is `None`).
+    /// Get up to 25 [`EsploraTx`]s from the [`Block`] with the given
+    /// [`BlockHash`], starting at `start_index`.
     ///
-    /// The `start_index` value MUST be a multiple of 25,
-    /// else an error will be returned by Esplora.
+    /// If `start_index` is `None`, starts from the first transaction (index 0).
+    ///
+    /// Note that `start_index` must be a multiple of 25, otherwise the server
+    /// will return an error.
     pub fn get_block_txs(
         &self,
         blockhash: &BlockHash,
@@ -547,11 +638,13 @@ impl BlockingClient {
         self.get_response_json(&path)
     }
 
-    /// Gets some recent block summaries starting at the tip or at `height` if
-    /// provided.
+    /// Get [`BlockInfo`] summaries for recent [`Block`]s.
+    ///
+    /// If `height` is `Some(h)`, returns blocks starting from height `h`.
+    /// If `height` is `None`, returns blocks starting from the current tip.
     ///
     /// The maximum number of summaries returned depends on the backend itself:
-    /// esplora returns `10` while [mempool.space](https://mempool.space/docs/api) returns `15`.
+    /// Esplora returns `10` while [mempool.space](https://mempool.space/docs/api) returns `15`.
     #[allow(deprecated)]
     #[deprecated(since = "0.13.0", note = "use `get_block_infos` instead")]
     pub fn get_blocks(&self, height: Option<u32>) -> Result<Vec<BlockSummary>, Error> {
@@ -566,11 +659,19 @@ impl BlockingClient {
         Ok(blocks)
     }
 
-    /// Gets some recent block summaries starting at the tip or at `height` if
-    /// provided.
+    /// Get [`BlockInfo`] summaries for recent [`Block`]s.
+    ///
+    /// If `height` is `Some(h)`, returns blocks starting from height `h`.
+    /// If `height` is `None`, returns blocks starting from the current tip.
     ///
     /// The maximum number of summaries returned depends on the backend itself:
-    /// esplora returns `10` while [mempool.space](https://mempool.space/docs/api) returns `15`.
+    /// Esplora returns `10` while [mempool.space](https://mempool.space/docs/api) returns `15`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidResponse`] if the server returns an empty list.
+    ///
+    /// This method does not return the full [`Block`].
     pub fn get_block_infos(&self, height: Option<u32>) -> Result<Vec<BlockInfo>, Error> {
         let path = match height {
             Some(height) => format!("/blocks/{height}"),
@@ -583,14 +684,14 @@ impl BlockingClient {
         Ok(blocks)
     }
 
-    /// Get all UTXOs locked to an address.
+    /// Get all confirmed [`Utxo`]s locked to the given [`Address`].
     pub fn get_address_utxos(&self, address: &Address) -> Result<Vec<Utxo>, Error> {
         let path = format!("/address/{address}/utxo");
 
         self.get_response_json(&path)
     }
 
-    /// Get all [`Utxo`]s locked to a [`Script`].
+    /// Get all confirmed [`Utxo`]s locked to the given [`Script`].
     pub fn get_scripthash_utxos(&self, script: &Script) -> Result<Vec<Utxo>, Error> {
         let script_hash = sha256::Hash::hash(script.as_bytes());
         let path = format!("/scripthash/{script_hash}/utxo");

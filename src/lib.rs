@@ -1,50 +1,68 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! An extensible blocking/async Esplora client
+//! # Esplora Client
 //!
-//! This library provides an extensible blocking and
-//! async Esplora client to query Esplora's backend.
+//! A client library for querying [Esplora] HTTP APIs from Rust.
 //!
-//! The library provides the possibility to build a blocking
-//! or async client, both using [`bitreq`].
-//! The library supports communicating to Esplora via a proxy
-//! and also using TLS (SSL) for secure communication.
+//! The crate exposes a shared set of Esplora response types in [`api`], plus
+//! optional blocking and async clients built on [`bitreq`]. Both clients use the
+//! same [`Builder`] configuration for the base URL, proxy, timeout, custom
+//! headers, and retry policy.
 //!
+//! # Client Modes
 //!
-//! ## Usage
+//! Enable the `blocking` feature to use `BlockingClient`, whose methods block
+//! the current thread until each request completes. Enable the `async` feature
+//! to use `AsyncClient`, whose methods return futures and require an async
+//! runtime. The default async sleeper is backed by Tokio when the `tokio`
+//! feature is enabled; custom runtimes can supply their own `Sleeper`.
 //!
-//! You can create a blocking client as follows:
+//! # Examples
 //!
-//! ```no_run
-//! # #[cfg(feature = "blocking")]
-//! # {
+//! Create a blocking client:
+//!
+//! ```rust,ignore
 //! use esplora_client::Builder;
-//! let builder = Builder::new("https://blockstream.info/testnet/api");
-//! let blocking_client = builder.build_blocking();
-//! # Ok::<(), esplora_client::Error>(());
-//! # }
+//!
+//! fn main() -> Result<(), esplora_client::Error> {
+//!     let builder = Builder::new("https://blockstream.info/testnet/api");
+//!     let blocking_client = builder.build_blocking();
+//!     let height = blocking_client.get_height()?;
+//!
+//!     Ok(())
+//! }
 //! ```
 //!
-//! Here is an example of how to create an asynchronous client.
+//! Create an async client:
 //!
-//! ```no_run
-//! # #[cfg(all(feature = "async", feature = "tokio"))]
-//! # {
+//! ```rust,ignore
 //! use esplora_client::Builder;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), esplora_client::Error> {
 //! let builder = Builder::new("https://blockstream.info/testnet/api");
-//! let async_client = builder.build_async();
-//! # Ok::<(), esplora_client::Error>(());
-//! # }
+//! let async_client = builder.build_async()?;
+//! let height = async_client.get_height().await?;
+//!
+//! Ok(())
+//! }
 //! ```
 //!
-//! ## Features
+//! # Retries
 //!
-//! By default the library enables all features. To specify
-//! specific features, set `default-features` to `false` in your `Cargo.toml`
-//! and specify the features you want. This will look like this:
+//! Both clients retry responses with status codes listed in
+//! [`RETRYABLE_ERROR_CODES`]. Retry attempts use exponential backoff starting
+//! at 256 milliseconds and are controlled by [`Builder::max_retries`].
 //!
-//! `esplora-client = { version = "*", default-features = false, features =
-//! ["blocking"] }`
+//! # Features
+//!
+//! By default the crate enables all features. To select only the pieces you
+//! need, set `default-features = false` in `Cargo.toml` and list the desired
+//! features explicitly:
+//!
+//! ```toml
+//! esplora-client = { version = "*", default-features = false, features = ["blocking"] }
+//! ```
 //!
 //! * `blocking` enables [`bitreq`], the blocking client with proxy.
 //! * `blocking-https` enables [`bitreq`], the blocking client with proxy and TLS (SSL) capabilities
@@ -53,8 +71,8 @@
 //!   capabilities using the `rustls` backend.
 //! * `blocking-https-native` enables [`bitreq`], the blocking client with proxy and TLS (SSL)
 //!   capabilities using the platform's native TLS backend (likely OpenSSL).
-//! * `blocking-https-bundled` enables [`bitreq`], the blocking client with proxy and TLS (SSL)
-//!   capabilities using a bundled OpenSSL library backend.
+//! * `blocking-https-rustls-probe` enables [`bitreq`], the blocking client with proxy and TLS (SSL)
+//!   capabilities using `rustls` and probed system roots.
 //! * `async` enables [`bitreq`], the async client with proxy capabilities.
 //! * `async-https` enables [`bitreq`], the async client with support for proxying and TLS (SSL)
 //!   using the default [`bitreq`] TLS backend.
@@ -62,12 +80,12 @@
 //!   (SSL) using the platform's native TLS backend (likely OpenSSL).
 //! * `async-https-rustls` enables [`bitreq`], the async client with support for proxying and TLS
 //!   (SSL) using the `rustls` TLS backend.
-//! * `async-https-rustls-manual-roots` enables [`bitreq`], the async client with support for
-//!   proxying and TLS (SSL) using the `rustls` TLS backend without using the default root
-//!   certificates.
+//! * `async-https-rustls-probe` enables [`bitreq`], the async client with support for proxying and
+//!   TLS (SSL) using `rustls` and probed system roots.
+//! * `tokio` enables the default async sleeper used by [`Builder::build_async`].
 //!
-//! [`dont remove this line or cargo doc will break`]: https://example.com
-#![cfg_attr(not(feature = "bitreq"), doc = "[`bitreq`]: https://docs.rs/bitreq")]
+//! [Esplora]: https://github.com/Blockstream/esplora/blob/master/API.md
+//! [`bitreq`]: https://docs.rs/bitreq
 #![allow(clippy::result_large_err)]
 #![warn(missing_docs)]
 #![allow(deprecated)]
@@ -95,65 +113,65 @@ pub use blocking::BlockingClient;
 #[cfg(feature = "async")]
 pub use r#async::AsyncClient;
 
-/// Response status codes for which the request may be retried.
+/// HTTP response status codes for which a request may be retried.
 pub const RETRYABLE_ERROR_CODES: [u16; 3] = [
     429, // TOO_MANY_REQUESTS
     500, // INTERNAL_SERVER_ERROR
     503, // SERVICE_UNAVAILABLE
 ];
 
-/// Base backoff in milliseconds.
+/// Base delay used by the exponential retry backoff.
 #[cfg(any(feature = "blocking", feature = "async"))]
 const BASE_BACKOFF_MILLIS: Duration = Duration::from_millis(256);
 
-/// Default max retries.
+/// Default maximum number of retry attempts per request.
 const DEFAULT_MAX_RETRIES: usize = 6;
 
-/// Default max cached connections
+/// Default maximum number of cached connections for the async client.
 #[cfg(feature = "async")]
 const DEFAULT_MAX_CONNECTIONS: usize = 10;
 
-/// Check if [`Response`] status is within 100-199.
+/// Check if the [`Response`] status code is informational (100-199).
 #[allow(unused)]
 #[cfg(any(feature = "blocking", feature = "async"))]
 fn is_informational(response: &Response) -> bool {
     (100..200).contains(&response.status_code)
 }
 
-/// Check if [`Response`] status is within 200-299.
+/// Check if the [`Response`] status code is successful (200-299).
 #[cfg(any(feature = "blocking", feature = "async"))]
 fn is_success(response: &Response) -> bool {
     (200..300).contains(&response.status_code)
 }
 
-/// Check if [`Response`] status is within 300-399.
+/// Check if the [`Response`] status code is a redirection (300-399).
 #[allow(unused)]
 #[cfg(any(feature = "blocking", feature = "async"))]
 fn is_redirection(response: &Response) -> bool {
     (300..400).contains(&response.status_code)
 }
 
-/// Check if [`Response`] status is within 400-499.
+/// Check if the [`Response`] status code is a client error (400-499).
 #[allow(unused)]
 #[cfg(any(feature = "blocking", feature = "async"))]
 fn is_client_error(response: &Response) -> bool {
     (400..500).contains(&response.status_code)
 }
 
-/// Check if [`Response`] status is within 500-599.
+/// Check if the [`Response`] status code is a server error (500-599).
 #[allow(unused)]
 #[cfg(any(feature = "blocking", feature = "async"))]
 fn is_server_error(response: &Response) -> bool {
     (500..600).contains(&response.status_code)
 }
 
-/// Check if [`Response`] status is within the retryable ones.
+/// Check if the [`Response`] status code is retryable (429, 500, 503).
 #[cfg(any(feature = "blocking", feature = "async"))]
 fn is_retryable(response: &Response) -> bool {
     RETRYABLE_ERROR_CODES.contains(&(response.status_code as u16))
 }
 
-/// Returns the [`FeeRate`] for the given confirmation target in blocks.
+/// Return the [`FeeRate`] for the given confirmation target in blocks.
 ///
 /// Selects the highest confirmation target from `estimates` that is at or
 /// below `target_blocks`, and returns its [`FeeRate`]. Returns `None` if no
@@ -166,7 +184,7 @@ pub fn convert_fee_rate(target_blocks: usize, estimates: HashMap<u16, FeeRate>) 
         .map(|(_, feerate)| feerate)
 }
 
-/// Converts a [`HashMap`] of fee estimates expressed as sat/vB ([`f64`]) into a [`FeeRate`].
+/// Convert a [`HashMap`] of fee estimates expressed as sat/vB ([`f64`]) into [`FeeRate`]s.
 pub fn sat_per_vbyte_to_feerate(estimates: HashMap<u16, f64>) -> HashMap<u16, FeeRate> {
     estimates
         .into_iter()
@@ -174,37 +192,58 @@ pub fn sat_per_vbyte_to_feerate(estimates: HashMap<u16, f64>) -> HashMap<u16, Fe
         .collect()
 }
 
-/// A builder for an [`AsyncClient`] or [`BlockingClient`].
+/// Shared configuration for `BlockingClient` and `AsyncClient`.
+///
+/// Start with [`Builder::new`] and then chain optional configuration methods
+/// before calling `Builder::build_blocking`, `Builder::build_async`, or
+/// `Builder::build_async_with_sleeper`.
+///
+/// # Example
+///
+/// ```no_run
+/// # #[cfg(feature = "blocking")]
+/// # {
+/// let client = esplora_client::Builder::new("https://mempool.space/testnet/api")
+///     .timeout(30)
+///     .max_retries(4)
+///     .header("user-agent", "my-wallet/0.1")
+///     .build_blocking();
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Builder {
-    /// The URL of the Esplora server.
+    /// The base URL of the Esplora server.
+    ///
+    /// This should include the API prefix expected by the server, for example
+    /// `https://mempool.space/api` or `https://blockstream.info/testnet/api`.
     pub base_url: String,
-    /// Optional URL of the proxy to use to make requests to the Esplora server
+    /// Optional proxy URL used for requests to the Esplora server.
     ///
     /// The string should be formatted as:
     /// `<protocol>://<user>:<password>@host:<port>`.
     ///
     /// Note that the format of this value and the supported protocols change
-    /// slightly between the blocking version of the client (using `minreq`)
-    /// and the async version (using `bitreq`). For more details check with
-    /// the documentation of the two crates. Both of them are compiled with
-    /// the `socks` feature enabled.
+    /// slightly by target and enabled transport features. See [bitreq]'s
+    /// proxy documentation for the accepted schemes.
     ///
     /// The proxy is ignored when targeting `wasm32`.
     pub proxy: Option<String>,
-    /// Socket timeout.
+    /// Per-request socket timeout, in seconds.
     pub timeout: Option<u64>,
-    /// HTTP headers to set on every request made to Esplora server.
+    /// HTTP headers to set on every request made to the Esplora server.
     pub headers: HashMap<String, String>,
-    /// Max retries
+    /// Maximum number of retry attempts for retryable HTTP responses.
     pub max_retries: usize,
-    /// The maximum number of cached connections.
+    /// Maximum number of cached connections for the async client.
     #[cfg(feature = "async")]
     pub max_connections: usize,
 }
 
 impl Builder {
-    /// Instantiate a new builder
+    /// Create a [`Builder`] for an Esplora server base URL.
+    ///
+    /// The URL is stored exactly as provided and request paths are appended to
+    /// it. Do not include a trailing slash unless your server expects one.
     pub fn new(base_url: &str) -> Self {
         Builder {
             base_url: base_url.to_string(),
@@ -217,94 +256,110 @@ impl Builder {
         }
     }
 
-    /// Set the proxy of the builder
+    /// Set the proxy URL used for requests.
+    ///
+    /// The proxy is ignored when targeting `wasm32`.
     pub fn proxy(mut self, proxy: &str) -> Self {
         self.proxy = Some(proxy.to_string());
         self
     }
 
-    /// Set the timeout of the builder
+    /// Set the per-request socket timeout, in seconds.
     pub fn timeout(mut self, timeout: u64) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
-    /// Add a header to set on each request
+    /// Add or replace an HTTP header sent with every request.
     pub fn header(mut self, key: &str, value: &str) -> Self {
         self.headers.insert(key.to_string(), value.to_string());
         self
     }
 
-    /// Set the maximum number of times to retry a request if the response status
-    /// is one of [`RETRYABLE_ERROR_CODES`].
+    /// Set the maximum number of retry attempts for retryable responses.
+    ///
+    /// Only responses whose status code is listed in
+    /// [`RETRYABLE_ERROR_CODES`] are retried.
     pub fn max_retries(mut self, count: usize) -> Self {
         self.max_retries = count;
         self
     }
 
-    /// Set the maximum number of cached connections in the client.
+    /// Set the maximum number of cached connections in the async client.
     #[cfg(feature = "async")]
     pub fn max_connections(mut self, count: usize) -> Self {
         self.max_connections = count;
         self
     }
 
-    /// Build a blocking client from builder
+    /// Build a [`BlockingClient`] from this configuration.
     #[cfg(feature = "blocking")]
     pub fn build_blocking(self) -> BlockingClient {
         BlockingClient::from_builder(self)
     }
 
-    /// Build an asynchronous client from builder
+    /// Build an [`AsyncClient`] from this configuration.
+    ///
+    /// This uses `DefaultSleeper`, which is backed by Tokio.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the async HTTP client cannot be constructed.
     #[cfg(all(feature = "async", feature = "tokio"))]
     pub fn build_async(self) -> Result<AsyncClient, Error> {
         AsyncClient::from_builder(self)
     }
 
-    /// Build an asynchronous client from builder where the returned client uses a
-    /// user-defined [`Sleeper`].
+    /// Build an [`AsyncClient`] with a user-defined [`Sleeper`].
+    ///
+    /// Use this when integrating with an async runtime other than Tokio or when
+    /// tests need a custom sleep implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the async HTTP client cannot be constructed.
     #[cfg(feature = "async")]
     pub fn build_async_with_sleeper<S: Sleeper>(self) -> Result<AsyncClient<S>, Error> {
         AsyncClient::from_builder(self)
     }
 }
 
-/// Errors that can happen during a request to `Esplora` servers.
+/// Errors that can occur while building clients, sending requests, or decoding responses.
 #[derive(Debug)]
 pub enum Error {
-    /// Error during `bitreq` HTTP request
+    /// Error during a [`bitreq`] HTTP request.
     #[cfg(any(feature = "blocking", feature = "async"))]
     BitReq(bitreq::Error),
-    /// Error during JSON (de)serialization
+    /// Error during JSON serialization or deserialization.
     SerdeJson(serde_json::Error),
-    /// HTTP response error
+    /// Non-successful HTTP response from the Esplora server.
     HttpResponse {
         /// The HTTP status code returned by the server.
         status: u16,
-        /// The error message content.
+        /// The response body returned by the server.
         message: String,
     },
-    /// Invalid number returned
+    /// Invalid integer returned by the server.
     Parsing(std::num::ParseIntError),
-    /// Invalid status code, unable to convert to `u16`
+    /// Invalid status code, unable to convert to `u16`.
     StatusCode(TryFromIntError),
-    /// Invalid Bitcoin data returned
+    /// Invalid Bitcoin consensus data returned by the server.
     BitcoinEncoding(bitcoin::consensus::encode::Error),
-    /// Invalid hex data returned (attempting to create an array)
+    /// Invalid fixed-size hex data returned by the server.
     HexToArray(bitcoin::hex::HexToArrayError),
-    /// Invalid hex data returned (attempting to create a vector)
+    /// Invalid variable-length hex data returned by the server.
     HexToBytes(bitcoin::hex::HexToBytesError),
-    /// Transaction not found
+    /// Transaction not found.
     TransactionNotFound(Txid),
-    /// Block Header height not found
+    /// Block header height not found.
     HeaderHeightNotFound(u32),
-    /// Block Header hash not found
+    /// Block header hash not found.
     HeaderHashNotFound(BlockHash),
-    /// Invalid HTTP Header name specified
+    /// Invalid HTTP header name specified in [`Builder::header`].
     InvalidHttpHeaderName(String),
-    /// Invalid HTTP Header value specified
+    /// Invalid HTTP header value specified in [`Builder::header`].
     InvalidHttpHeaderValue(String),
-    /// The server sent an invalid response
+    /// The server sent an invalid response.
     InvalidResponse,
 }
 

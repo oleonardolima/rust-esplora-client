@@ -1,6 +1,34 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Esplora by way of `reqwest` HTTP client.
+//! # Asynchronous Esplora Client
+//!
+//! This module implements [`AsyncClient`], an asynchronous HTTP client for
+//! interacting with an [Esplora] server by way of [`bitreq`].
+//!
+//! Use this client from async applications and libraries. Each method returns a
+//! future that sends the request, waits for the response, and decodes the body
+//! into the requested type.
+//!
+//! The client is configured through [`Builder`], including the
+//! base URL, proxy, socket timeout, custom headers, retry count, and maximum
+//! number of cached connections. Retry sleeping is abstracted through
+//! [`Sleeper`], so runtimes other than Tokio can provide their own sleep
+//! implementation.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! # use esplora_client::{Builder, r#async::AsyncClient};
+//! # async fn example() -> Result<(), esplora_client::Error> {
+//!
+//! let client = Builder::new("https://mempool.space/api").build_async()?;
+//! let height = client.get_height().await?;
+//!
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [Esplora]: https://github.com/Blockstream/esplora/blob/master/API.md
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -26,28 +54,54 @@ use crate::{
 #[allow(deprecated)]
 use crate::BlockSummary;
 
-/// An async client for interacting with an Esplora API server.
 // FIXME: (@oleonardolima) there's no `Debug` implementation for `bitreq::Client`.
+/// An async client for interacting with an Esplora API server.
+///
+/// Use [`Builder`] to construct an instance of this client. The client stores
+/// the server base URL and request configuration, then exposes convenience
+/// methods for the transaction, block, address, scripthash, fee-estimate, and
+/// mempool endpoints.
+///
+/// The generic parameter `S` determines the asynchronous runtime used for
+/// sleeping between retries. Defaults to the Tokio-backed [`DefaultSleeper`].
+///
+/// # Retries
+///
+/// Failed requests are automatically retried up to `max_retries` times
+/// (configured via [`Builder`]) with exponential backoff, but only for
+/// retryable HTTP status codes. See [`crate::RETRYABLE_ERROR_CODES`] for the
+/// full list.
 #[derive(Clone)]
 pub struct AsyncClient<S = DefaultSleeper> {
-    /// The URL of the Esplora Server.
+    /// The URL of the Esplora server.
     url: String,
-    /// The proxy is ignored when targeting `wasm32`.
+    /// The URL of the proxy host.
+    ///
+    /// NOTE: The proxy is ignored when targeting `wasm32`.
     proxy: Option<String>,
-    /// Socket timeout.
+    /// Per-request socket timeout, in seconds.
     timeout: Option<u64>,
-    /// HTTP headers to set on every request made to Esplora server
+    /// HTTP headers to set on every request made to the Esplora server.
     headers: HashMap<String, String>,
-    /// Number of times to retry a request
+    /// Maximum number of retry attempts for retryable responses.
     max_retries: usize,
     /// The inner [`bitreq::Client`] HTTP client to cache connections.
     client: Client,
-    /// Marker for the type of sleeper used
+    /// Marker for the sleeper implementation.
     marker: PhantomData<S>,
 }
 
 impl<S: Sleeper> AsyncClient<S> {
     /// Build an [`AsyncClient`] from a [`Builder`].
+    ///
+    /// Configures the underlying [`bitreq::Client`] with
+    /// proxy, timeout, and headers specified in the [`Builder`].
+    /// No network request is made until a client method is awaited.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the HTTP client fails to build,
+    /// or if any of the provided header names or values are invalid.
     pub fn from_builder(builder: Builder) -> Result<Self, Error> {
         Ok(AsyncClient {
             url: builder.base_url,
@@ -60,17 +114,25 @@ impl<S: Sleeper> AsyncClient<S> {
         })
     }
 
-    /// Get the underlying base URL.
+    /// Return the base URL of the Esplora server this client connects to.
+    ///
+    /// The returned value is the exact string provided to [`Builder::new`].
     pub fn url(&self) -> &str {
         &self.url
     }
 
-    /// Get the underlying [`Client`].
+    /// Return the underlying [`bitreq::Client`].
+    ///
+    /// This can be useful for callers that need access to shared connection
+    /// state managed by the HTTP client.
     pub fn client(&self) -> &Client {
         &self.client
     }
 
     /// Build a HTTP [`Request`] with given [`Method`] and URI `path`.
+    ///
+    /// Configures the request with the proxy, timeout, and headers set on
+    /// this client. Used internally by all other request helper methods.
     pub(crate) fn build_request(&self, method: Method, path: &str) -> Result<Request, Error> {
         let mut request = Request::new(method, format!("{}{}", self.url, path));
 
@@ -91,8 +153,8 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(request)
     }
 
-    /// Sends a GET request to the given `url`, retrying failed attempts
-    /// for retryable error codes until max retries hit.
+    /// Sends a GET request to `url`, retrying on retryable status codes
+    /// with exponential backoff until [`AsyncClient::max_retries`] is reached.
     async fn get_with_retry(&self, path: &str) -> Result<Response, Error> {
         let mut delay = BASE_BACKOFF_MILLIS;
         let mut attempts = 0;
@@ -111,17 +173,14 @@ impl<S: Sleeper> AsyncClient<S> {
         }
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to any `T` that
-    /// implement [`bitcoin::consensus::Decodable`].
+    /// Makes a GET request to `path`, deserializing the response body as raw
+    /// bytes into `T` using [`bitcoin::consensus::Decodable`].
     ///
-    /// It should be used when requesting Esplora endpoints that can be directly
-    /// deserialized to native `rust-bitcoin` types, which implements
-    /// [`bitcoin::consensus::Decodable`] from `&[u8]`.
+    /// Use this for endpoints that return raw binary Bitcoin data.
     ///
     /// # Errors
     ///
-    /// This function will return an error either from the HTTP client, or the
-    /// [`bitcoin::consensus::Decodable`] deserialization.
+    /// Returns an [`Error`] if the request fails or deserialization fails.
     async fn get_response<T: Decodable>(&self, path: &str) -> Result<T, Error> {
         let response = self.get_with_retry(path).await?;
 
@@ -134,11 +193,9 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(deserialize::<T>(response.as_bytes())?)
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    /// Makes a GET request to `path`, returning `None` on a 404 response.
     ///
-    /// It uses [`AsyncEsploraClient::get_response`] internally.
-    ///
-    /// See [`AsyncEsploraClient::get_response`] above for full documentation.
+    /// Delegates to [`Self::get_response`]. See its documentation for details.
     async fn get_opt_response<T: Decodable>(&self, path: &str) -> Result<Option<T>, Error> {
         match self.get_response::<T>(path).await {
             Ok(res) => Ok(Some(res)),
@@ -147,16 +204,15 @@ impl<S: Sleeper> AsyncClient<S> {
         }
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to any `T` that
-    /// implements [`serde::de::DeserializeOwned`].
+    /// Makes a GET request to `path`, deserializing the response body as JSON
+    /// into `T` using [`serde::de::DeserializeOwned`].
     ///
-    /// It should be used when requesting Esplora endpoints that have a specific
-    /// defined API, mostly defined in [`crate::api`].
+    /// Use this for endpoints that return Esplora-specific JSON types, as
+    /// defined in [`crate::api`].
     ///
     /// # Errors
     ///
-    /// This function will return an error either from the HTTP client, or the
-    /// [`serde::de::DeserializeOwned`] deserialization.
+    /// Returns an [`Error`] if the request fails or JSON deserialization fails.
     async fn get_response_json<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
@@ -172,12 +228,9 @@ impl<S: Sleeper> AsyncClient<S> {
         response.json::<T>().map_err(Error::BitReq)
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    /// Makes a GET request to `path`, returning `None` on a 404 response.
     ///
-    /// It uses [`AsyncEsploraClient::get_response_json`] internally.
-    ///
-    /// See [`AsyncEsploraClient::get_response_json`] above for full
-    /// documentation.
+    /// Delegates to [`Self::get_response_json`]. See its documentation for details.
     async fn get_opt_response_json<T: serde::de::DeserializeOwned>(
         &self,
         url: &str,
@@ -189,17 +242,15 @@ impl<S: Sleeper> AsyncClient<S> {
         }
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to any `T` that
-    /// implements [`bitcoin::consensus::Decodable`].
+    /// Makes a GET request to `path`, deserializing the hex-encoded response
+    /// body into `T` using [`bitcoin::consensus::Decodable`].
     ///
-    /// It should be used when requesting Esplora endpoints that are expected
-    /// to return a hex string decodable to native `rust-bitcoin` types which
-    /// implement [`bitcoin::consensus::Decodable`] from `&[u8]`.
+    /// Use this for endpoints that return hex-encoded Bitcoin data.
     ///
     /// # Errors
     ///
-    /// This function will return an error either from the HTTP client, or the
-    /// [`bitcoin::consensus::Decodable`] deserialization.
+    /// Returns an [`Error`] if the request fails, hex decoding fails,
+    /// or consensus deserialization fails.
     async fn get_response_hex<T: Decodable>(&self, path: &str) -> Result<T, Error> {
         let response = self.get_with_retry(path).await?;
 
@@ -213,12 +264,9 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(deserialize(&Vec::from_hex(hex_str)?)?)
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    /// Makes a GET request to `path`, returning `None` on a 404 response.
     ///
-    /// It uses [`AsyncEsploraClient::get_response_hex`] internally.
-    ///
-    /// See [`AsyncEsploraClient::get_response_hex`] above for full
-    /// documentation.
+    /// Delegates to [`Self::get_response_hex`]. See its documentation for details.
     async fn get_opt_response_hex<T: Decodable>(&self, path: &str) -> Result<Option<T>, Error> {
         match self.get_response_hex(path).await {
             Ok(res) => Ok(Some(res)),
@@ -227,14 +275,14 @@ impl<S: Sleeper> AsyncClient<S> {
         }
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `String`.
+    /// Makes a GET request to `path`, returning the response body as a [`String`].
     ///
-    /// It should be used when requesting Esplora endpoints that can return
-    /// `String` formatted data that can be parsed downstream.
+    /// Use this for endpoints that return plain text data that needs further
+    /// parsing downstream.
     ///
     /// # Errors
     ///
-    /// This function will return an error either from the HTTP client.
+    /// Returns an [`Error`] if the request fails.
     async fn get_response_text(&self, path: &str) -> Result<String, Error> {
         let response = self.get_with_retry(path).await?;
 
@@ -247,12 +295,9 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(response.as_str()?.to_string())
     }
 
-    /// Make an HTTP GET request to given URL, deserializing to `Option<T>`.
+    /// Makes a GET request to `path`, returning `None` on a 404 response.
     ///
-    /// It uses [`AsyncEsploraClient::get_response_text`] internally.
-    ///
-    /// See [`AsyncEsploraClient::get_response_text`] above for full
-    /// documentation.
+    /// Delegates to [`Self::get_response_text`]. See its documentation for details.
     async fn get_opt_response_text(&self, path: &str) -> Result<Option<String>, Error> {
         match self.get_response_text(path).await {
             Ok(s) => Ok(Some(s)),
@@ -261,8 +306,10 @@ impl<S: Sleeper> AsyncClient<S> {
         }
     }
 
-    /// Make an HTTP POST request to given URL, converting any `T` that
-    /// implement [`Into<Body>`] and setting query parameters, if any.
+    /// Make an HTTP POST request to `path` with `body`.
+    ///
+    /// Configures query parameters, if any, and returns the raw response after
+    /// checking the HTTP status code.
     ///
     /// # Errors
     ///
@@ -291,12 +338,17 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(response)
     }
 
-    /// Get a [`Transaction`] option given its [`Txid`]
+    /// Get a raw [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns `None` if the transaction is not found.
     pub async fn get_tx(&self, txid: &Txid) -> Result<Option<Transaction>, Error> {
         self.get_opt_response(&format!("/tx/{txid}/raw")).await
     }
 
-    /// Get a [`Transaction`] given its [`Txid`].
+    /// Get a raw [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns an [`Error::TransactionNotFound`] if the transaction is not found.
+    /// Prefer [`Self::get_tx`] if you want to handle the not-found case explicitly.
     pub async fn get_tx_no_opt(&self, txid: &Txid) -> Result<Transaction, Error> {
         match self.get_tx(txid).await {
             Ok(Some(tx)) => Ok(tx),
@@ -305,8 +357,10 @@ impl<S: Sleeper> AsyncClient<S> {
         }
     }
 
-    /// Get a [`Txid`] of a transaction given its index in a block with a given
-    /// hash.
+    /// Get the [`Txid`] of the transaction at position `index` within the
+    /// block identified by `block_hash`.
+    ///
+    /// Returns `None` if the block or index is not found.
     pub async fn get_txid_at_block_index(
         &self,
         block_hash: &BlockHash,
@@ -321,56 +375,79 @@ impl<S: Sleeper> AsyncClient<S> {
         }
     }
 
-    /// Get the status of a [`Transaction`] given its [`Txid`].
+    /// Get the confirmation status of a [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns a [`TxStatus`] containing whether the transaction is confirmed,
+    /// and if so, the block height, hash, and timestamp it was confirmed in.
     pub async fn get_tx_status(&self, txid: &Txid) -> Result<TxStatus, Error> {
         self.get_response_json(&format!("/tx/{txid}/status")).await
     }
 
-    /// Get transaction info given its [`Txid`].
+    /// Get an [`EsploraTx`] given its [`Txid`].
+    ///
+    /// Unlike [`Self::get_tx`], returns the Esplora-specific [`EsploraTx`]
+    /// type, which includes additional metadata such as confirmation status,
+    /// fee, and weight. Returns `None` if the transaction is not found.
     pub async fn get_tx_info(&self, txid: &Txid) -> Result<Option<EsploraTx>, Error> {
         self.get_opt_response_json(&format!("/tx/{txid}")).await
     }
 
-    /// Get the spend status of a [`Transaction`]'s outputs, given its [`Txid`].
+    /// Get the spend status of all outputs in a [`Transaction`], given its [`Txid`].
+    ///
+    /// Returns a [`Vec`] of [`OutputStatus`], one per output, ordered as they
+    /// appear in the [`Transaction`].
     pub async fn get_tx_outspends(&self, txid: &Txid) -> Result<Vec<OutputStatus>, Error> {
         self.get_response_json(&format!("/tx/{txid}/outspends"))
             .await
     }
 
-    /// Get a [`BlockHeader`] given a particular block hash.
+    /// Get the [`BlockHeader`] of a [`Block`] given its [`BlockHash`].
     pub async fn get_header_by_hash(&self, block_hash: &BlockHash) -> Result<BlockHeader, Error> {
         self.get_response_hex(&format!("/block/{block_hash}/header"))
             .await
     }
 
-    /// Get the [`BlockStatus`] given a particular [`BlockHash`].
+    /// Get the [`BlockStatus`] of a [`Block`] given its [`BlockHash`].
+    ///
+    /// Returns a [`BlockStatus`] indicating whether this [`Block`] is part of
+    /// the best chain, its height, and the [`BlockHash`] of the next [`Block`],
+    /// if any.
     pub async fn get_block_status(&self, block_hash: &BlockHash) -> Result<BlockStatus, Error> {
         self.get_response_json(&format!("/block/{block_hash}/status"))
             .await
     }
 
-    /// Get a [`Block`] given a particular [`BlockHash`].
+    /// Get the full [`Block`] with the given [`BlockHash`].
+    ///
+    /// Returns `None` if the [`Block`] is not found.
     pub async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>, Error> {
         self.get_opt_response(&format!("/block/{block_hash}/raw"))
             .await
     }
 
-    /// Get a merkle inclusion proof for a [`Transaction`] with the given
-    /// [`Txid`].
+    /// Get a Merkle inclusion proof for a [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns a [`MerkleProof`] that can be used to verify the transaction's
+    /// inclusion in a block. Returns `None` if the transaction is not found or
+    /// is unconfirmed.
     pub async fn get_merkle_proof(&self, tx_hash: &Txid) -> Result<Option<MerkleProof>, Error> {
         self.get_opt_response_json(&format!("/tx/{tx_hash}/merkle-proof"))
             .await
     }
 
-    /// Get a [`MerkleBlock`] inclusion proof for a [`Transaction`] with the
-    /// given [`Txid`].
+    /// Get a [`MerkleBlock`] inclusion proof for a [`Transaction`] given its [`Txid`].
+    ///
+    /// Returns `None` if the transaction is not found or is unconfirmed.
     pub async fn get_merkle_block(&self, tx_hash: &Txid) -> Result<Option<MerkleBlock>, Error> {
         self.get_opt_response_hex(&format!("/tx/{tx_hash}/merkleblock-proof"))
             .await
     }
 
-    /// Get the spending status of an output given a [`Txid`] and the output
-    /// index.
+    /// Get the spend status of a specific output, identified by its [`Txid`]
+    /// and output index.
+    ///
+    /// Returns an [`OutputStatus`] indicating whether the output has been
+    /// spent, and if so, by which transaction. Returns `None` if not found.
     pub async fn get_output_status(
         &self,
         txid: &Txid,
@@ -380,7 +457,14 @@ impl<S: Sleeper> AsyncClient<S> {
             .await
     }
 
-    /// Broadcast a [`Transaction`] to Esplora
+    /// Broadcast a [`Transaction`] to the Esplora server.
+    ///
+    /// The transaction is serialized and sent as a hex-encoded string.
+    /// Returns the [`Txid`] of the broadcasted transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the request fails or the server rejects the transaction.
     pub async fn broadcast(&self, transaction: &Transaction) -> Result<Txid, Error> {
         let body = serialize::<Transaction>(transaction).to_lower_hex_string();
         let response = self.post_request_bytes("/tx", body, None).await?;
@@ -388,14 +472,17 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(txid)
     }
 
-    /// Broadcast a package of [`Transaction`]s to Esplora.
+    /// Broadcast a package of [`Transaction`]s to the Esplora server.
     ///
-    /// If `maxfeerate` is provided, any transaction whose
-    /// fee is higher will be rejected.
+    /// Returns a [`SubmitPackageResult`] containing the result for each
+    /// transaction in the package, keyed by [`bitcoin::Wtxid`].
     ///
-    /// If `maxburnamount` is provided, any transaction
-    /// with higher provably unspendable outputs amount
-    /// will be rejected.
+    /// Optionally, `maxfeerate` and `maxburnamount` can be provided to reject
+    /// transactions that exceed these thresholds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the request fails or the server rejects the package.
     pub async fn submit_package(
         &self,
         transactions: &[Transaction],
@@ -431,7 +518,7 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(result)
     }
 
-    /// Get the current height of the blockchain tip
+    /// Get the block height of the current blockchain tip.
     pub async fn get_height(&self) -> Result<u32, Error> {
         self.get_response_text("/blocks/tip/height")
             .await
@@ -445,31 +532,38 @@ impl<S: Sleeper> AsyncClient<S> {
             .map(|block_hash| BlockHash::from_str(&block_hash).map_err(Error::HexToArray))?
     }
 
-    /// Get the [`BlockHash`] of a specific block height
+    /// Get the [`BlockHash`] of a [`Block`] given its height.
     pub async fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, Error> {
         self.get_response_text(&format!("/block-height/{block_height}"))
             .await
             .map(|block_hash| BlockHash::from_str(&block_hash).map_err(Error::HexToArray))?
     }
 
-    /// Get information about a specific address, includes confirmed balance and transactions in
-    /// the mempool.
+    /// Get statistics about an [`Address`].
+    ///
+    /// Returns an [`AddressStats`] containing confirmed and mempool transaction
+    /// summaries for the given address, including funded and spent output
+    /// counts and their total values.
     pub async fn get_address_stats(&self, address: &Address) -> Result<AddressStats, Error> {
         let path = format!("/address/{address}");
         self.get_response_json(&path).await
     }
 
-    /// Get statistics about a particular [`Script`] hash's confirmed and mempool transactions.
+    /// Get statistics about a [`Script`] hash's confirmed and mempool transactions.
+    ///
+    /// Returns a [`ScriptHashStats`] containing transaction summaries for the
+    /// SHA256 hash of the given [`Script`].
     pub async fn get_scripthash_stats(&self, script: &Script) -> Result<ScriptHashStats, Error> {
         let script_hash = sha256::Hash::hash(script.as_bytes());
         let path = format!("/scripthash/{script_hash}");
         self.get_response_json(&path).await
     }
 
-    /// Get transaction history for the specified address, sorted with newest first.
+    /// Get confirmed transaction history for an [`Address`], sorted newest first.
     ///
     /// Returns up to 50 mempool transactions plus the first 25 confirmed transactions.
-    /// More can be requested by specifying the last txid seen by the previous query.
+    /// To paginate, pass the [`Txid`] of the last transaction seen in the
+    /// previous response as `last_seen`.
     pub async fn get_address_txs(
         &self,
         address: &Address,
@@ -483,7 +577,7 @@ impl<S: Sleeper> AsyncClient<S> {
         self.get_response_json(&path).await
     }
 
-    /// Get mempool [`Transaction`]s for the specified [`Address`], sorted with newest first.
+    /// Get unconfirmed mempool [`EsploraTx`]s for an [`Address`], sorted newest first.
     pub async fn get_mempool_address_txs(
         &self,
         address: &Address,
@@ -493,10 +587,10 @@ impl<S: Sleeper> AsyncClient<S> {
         self.get_response_json(&path).await
     }
 
-    /// Get transaction history for the specified address/scripthash,
-    /// sorted with newest first. Returns 25 transactions per page.
-    /// More can be requested by specifying the last txid seen by the previous
-    /// query.
+    /// Get confirmed transaction history for a [`Script`] hash, sorted newest first.
+    ///
+    /// Returns 25 transactions per page. To paginate, pass the [`Txid`] of the
+    /// last transaction seen in the previous response as `last_seen`.
     pub async fn get_scripthash_txs(
         &self,
         script: &Script,
@@ -511,8 +605,7 @@ impl<S: Sleeper> AsyncClient<S> {
         self.get_response_json(&path).await
     }
 
-    /// Get mempool [`Transaction`] history for the
-    /// specified [`Script`] hash, sorted with newest first.
+    /// Get unconfirmed mempool [`EsploraTx`]s for a [`Script`] hash, sorted newest first.
     pub async fn get_mempool_scripthash_txs(
         &self,
         script: &Script,
@@ -523,12 +616,15 @@ impl<S: Sleeper> AsyncClient<S> {
         self.get_response_json(&path).await
     }
 
-    /// Get statistics about the mempool.
+    /// Get global statistics about the mempool.
+    ///
+    /// Returns a [`MempoolStats`] containing the transaction count, total
+    /// virtual size, total fees, and fee rate histogram.
     pub async fn get_mempool_stats(&self) -> Result<MempoolStats, Error> {
         self.get_response_json("/mempool").await
     }
 
-    /// Get a list of the last 10 [`Transaction`]s to enter the mempool.
+    /// Get the last 10 [`MempoolRecentTx`]s to enter the mempool.
     pub async fn get_mempool_recent_txs(&self) -> Result<Vec<MempoolRecentTx>, Error> {
         self.get_response_json("/mempool/recent").await
     }
@@ -551,25 +647,33 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(estimates)
     }
 
-    /// Get a summary about a [`Block`], given its [`BlockHash`].
+    /// Get a [`BlockInfo`] summary for the [`Block`] with the given [`BlockHash`].
+    ///
+    /// [`BlockInfo`] includes metadata such as the height, timestamp,
+    /// [`Transaction`] count, size, and [`Weight`](bitcoin::Weight).
+    ///
+    /// This method does not return the full [`Block`].
     pub async fn get_block_info(&self, blockhash: &BlockHash) -> Result<BlockInfo, Error> {
         let path = format!("/block/{blockhash}");
 
         self.get_response_json(&path).await
     }
 
-    /// Get all [`Txid`]s that belong to a [`Block`] identified by it's [`BlockHash`].
+    /// Get all [`Txid`]s of [`Transaction`]s included in the [`Block`] with the
+    /// given [`BlockHash`].
     pub async fn get_block_txids(&self, blockhash: &BlockHash) -> Result<Vec<Txid>, Error> {
         let path = format!("/block/{blockhash}/txids");
 
         self.get_response_json(&path).await
     }
 
-    /// Get up to 25 [`Transaction`]s from a [`Block`], given its [`BlockHash`],
-    /// beginning at `start_index` (starts from 0 if `start_index` is `None`).
+    /// Get up to 25 [`EsploraTx`]s from the [`Block`] with the given
+    /// [`BlockHash`], starting at `start_index`.
     ///
-    /// The `start_index` value MUST be a multiple of 25,
-    /// else an error will be returned by Esplora.
+    /// If `start_index` is `None`, starts from the first transaction (index 0).
+    ///
+    /// Note that `start_index` must be a multiple of 25, otherwise the server
+    /// will return an error.
     pub async fn get_block_txs(
         &self,
         blockhash: &BlockHash,
@@ -583,11 +687,13 @@ impl<S: Sleeper> AsyncClient<S> {
         self.get_response_json(&path).await
     }
 
-    /// Gets some recent block summaries starting at the tip or at `height` if
-    /// provided.
+    /// Get [`BlockInfo`] summaries for recent [`Block`]s.
+    ///
+    /// If `height` is `Some(h)`, returns blocks starting from height `h`.
+    /// If `height` is `None`, returns blocks starting from the current tip.
     ///
     /// The maximum number of summaries returned depends on the backend itself:
-    /// esplora returns `10` while [mempool.space](https://mempool.space/docs/api) returns `15`.
+    /// Esplora returns `10` while [mempool.space](https://mempool.space/docs/api) returns `15`.
     #[allow(deprecated)]
     #[deprecated(since = "0.13.0", note = "use `get_block_infos` instead")]
     pub async fn get_blocks(&self, height: Option<u32>) -> Result<Vec<BlockSummary>, Error> {
@@ -602,11 +708,19 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(blocks)
     }
 
-    /// Gets some recent block summaries starting at the tip or at `height` if
-    /// provided.
+    /// Get [`BlockInfo`] summaries for recent [`Block`]s.
+    ///
+    /// If `height` is `Some(h)`, returns blocks starting from height `h`.
+    /// If `height` is `None`, returns blocks starting from the current tip.
     ///
     /// The maximum number of summaries returned depends on the backend itself:
-    /// esplora returns `10` while [mempool.space](https://mempool.space/docs/api) returns `15`.
+    /// Esplora returns `10` while [mempool.space](https://mempool.space/docs/api) returns `15`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidResponse`] if the server returns an empty list.
+    ///
+    /// This method does not return the full [`Block`].
     pub async fn get_block_infos(&self, height: Option<u32>) -> Result<Vec<BlockInfo>, Error> {
         let path = match height {
             Some(height) => format!("/blocks/{height}"),
@@ -619,14 +733,14 @@ impl<S: Sleeper> AsyncClient<S> {
         Ok(blocks)
     }
 
-    /// Get all UTXOs locked to an address.
+    /// Get all confirmed [`Utxo`]s locked to the given [`Address`].
     pub async fn get_address_utxos(&self, address: &Address) -> Result<Vec<Utxo>, Error> {
         let path = format!("/address/{address}/utxo");
 
         self.get_response_json(&path).await
     }
 
-    /// Get all [`Utxo`]s locked to a [`Script`].
+    /// Get all confirmed [`Utxo`]s locked to the given [`Script`].
     pub async fn get_scripthash_utxos(&self, script: &Script) -> Result<Vec<Utxo>, Error> {
         let script_hash = sha256::Hash::hash(script.as_bytes());
         let path = format!("/scripthash/{script_hash}/utxo");
@@ -635,15 +749,24 @@ impl<S: Sleeper> AsyncClient<S> {
     }
 }
 
-/// Sleeper trait that allows any async runtime to be used.
+/// A trait for abstracting over async sleep implementations.
+///
+/// [`AsyncClient`] uses this trait to wait between retry attempts without
+/// committing the client type to a specific async runtime.
+///
+/// The only provided implementation is [`DefaultSleeper`], which is backed by Tokio.
+/// Custom implementations can be provided to support other runtimes.
 pub trait Sleeper: 'static {
-    /// The `Future` type returned by the sleep function.
+    /// The [`Future`](std::future::Future) type returned by [`Sleeper::sleep`].
     type Sleep: std::future::Future<Output = ()>;
-    /// Create a `Future` that completes after the specified [`Duration`].
+    /// Return a [`Future`](std::future::Future) that completes after `duration`.
     fn sleep(dur: Duration) -> Self::Sleep;
 }
 
-/// The default `Sleeper` implementation using the underlying async runtime.
+/// The default [`Sleeper`] implementation, backed by [`tokio::time::sleep`].
+///
+/// This type is available when the `tokio` feature is enabled or while running
+/// tests.
 #[derive(Debug, Clone, Copy)]
 pub struct DefaultSleeper;
 

@@ -1,7 +1,5 @@
 # rust-esplora-client
 
-Bitcoin Esplora API client library. Supports plaintext, TLS and Onion servers. Blocking or async.
-
 <p>
     <a href="https://crates.io/crates/esplora-client"><img src="https://img.shields.io/crates/v/esplora-client.svg"/></a>
     <a href="https://docs.rs/esplora-client"><img src="https://img.shields.io/badge/docs.rs-esplora--client-blue"/></a>
@@ -9,6 +7,8 @@ Bitcoin Esplora API client library. Supports plaintext, TLS and Onion servers. B
     <a href="https://github.com/bitcoindevkit/rust-esplora-client/blob/master/LICENSE.md"><img src="https://img.shields.io/badge/License-MIT%2FApache--2.0-red.svg"/></a>
     <a href="https://github.com/bitcoindevkit/rust-esplora-client/actions/workflows/rust.yml"><img src="https://github.com/bitcoindevkit/rust-esplora-client/actions/workflows/rust.yml/badge.svg"></a>
 </p>
+
+Asynchronous and blocking clients and types for interacting with Esplora servers over HTTP.
 
 ## Developing
 
